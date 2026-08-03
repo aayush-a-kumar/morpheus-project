@@ -31,7 +31,8 @@ class QbloxQutipSimulator:
         self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
         self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
         self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
-        self.sm = qutip.tensor(qutip.sigmam(), qutip.identity(self.N_res))
+        #NOTE: QuTiP recommends .destroy() for lowering
+        self.sm = qutip.tensor(qutip.destroy(2), qutip.identity(self.N_res))
         
         self.a = qutip.tensor(qutip.identity(2), qutip.destroy(self.N_res))
         self.ad = self.a.dag()
@@ -59,7 +60,7 @@ class QbloxQutipSimulator:
         if t_rel < 0 or t_rel > duration:
             return 0.0j
         
-        amp = pulse_info.get('amp', 0.0)
+        amp = pulse_info.get('amplitude', pulse_info.get('amp', 0.0))
         phase_deg = pulse_info.get('phase', 0.0)
         phase_rad = np.deg2rad(phase_deg)
         
@@ -133,6 +134,7 @@ class QbloxQutipSimulator:
             durations.append(dur)
             wfs.append(wf)
             
+        pulses['amplitude'] = amps
         pulses['amp'] = amps
         pulses['phase'] = phases
         pulses['duration'] = durations
@@ -246,6 +248,8 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
     def _resolve_value(self, val, mapping: dict):
         if hasattr(val, 'substitute'):
             return val.substitute(mapping)
+        if hasattr(val, 'name') and val.name in mapping:
+            return mapping[val.name]
         return val
 
     def simulate(self, schedule: Schedule, initial_state: qutip.Qobj = None):
@@ -285,6 +289,8 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                             # Resolve LinearDomain value for this iteration
                             val = domain.start + it_idx * (domain.stop - domain.start) / (domain.num - 1) if domain.num > 1 else domain.start
                             mapping[var] = val
+                            if hasattr(var, 'name'):
+                                mapping[var.name] = val
                 
                 # Extract and resolve pulse info
                 a, p, dur, wf = 0.0, 0.0, row['duration'], 'square'
@@ -293,7 +299,7 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                 
                 if p_info_list:
                     p_info = p_info_list[0]
-                    a = self._resolve_value(p_info.get('amp', 0.0), mapping)
+                    a = self._resolve_value(p_info.get('amplitude', 0.0), mapping)
                     p = self._resolve_value(p_info.get('phase', 0.0), mapping)
                     dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
                     wf = p_info.get('wf_func', 'square')
