@@ -1,0 +1,6 @@
+qblox-scheduler>=0.1.0b1
+qutip
+numpy
+pandas
+matplotlib
+scipy

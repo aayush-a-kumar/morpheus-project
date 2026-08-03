@@ -1,0 +1,129 @@
+{
+    "name": "two_flux_tunable_transmons",
+    "elements": {
+        "q0": {
+            "name": "q0",
+            "reset": {
+                "duration": 0.0001,
+                "name": "reset"
+            },
+            "rxy": {
+                "amp180": 0.1175,
+                "beta": 0.0,
+                "duration": 50e-9,
+                "name": "rxy"
+            },
+            "measure": {
+                "pulse_type": "SquarePulse",
+                "pulse_amp": 0.05,
+                "pulse_duration": 5e-06,
+                "acq_channel": 0,
+                "acq_delay": 2e-07,
+                "integration_time": 5e-06,
+                "reset_clock_phase": true,
+                "acq_weights_a": {
+                    "data": "",
+                    "shape": [
+                        0
+                    ],
+                    "dtype": "float64"
+                },
+                "acq_weights_b": {
+                    "data": "",
+                    "shape": [
+                        0
+                    ],
+                    "dtype": "float64"
+                },
+                "acq_weights_sampling_rate": 1.0,
+                "acq_weight_type": "SSB",
+                "acq_rotation": 0,
+                "acq_threshold": 0,
+                "name": "measure"
+            },
+            "ports": {
+                "microwave": "q0:mw",
+                "flux": "q0:fl",
+                "readout": "q0:res",
+                "name": "ports"
+            },
+            "clock_freqs": {
+                "f01": 50e6,
+                "f12": 0,
+                "readout": 100e6,
+                "name": "clock_freqs"
+            },
+            "element_type": "BasicTransmonElement"
+        },
+        "q1": {
+            "name": "q1",
+            "reset": {
+                "duration": 300e-6,
+                "name": "reset"
+            },
+            "rxy": {
+                "amp180": 0.200027,
+                "beta": 0.0,
+                "duration": 50e-9,
+                "name": "rxy"
+            },
+            "measure": {
+                "pulse_type": "SquarePulse",
+                "pulse_amp": 1.0,
+                "pulse_duration": 5e-06,
+                "acq_channel": 1,
+                "acq_delay": 2e-07,
+                "integration_time": 5e-06,
+                "reset_clock_phase": true,
+                "acq_weights_a": {
+                    "data": "",
+                    "shape": [
+                        0
+                    ],
+                    "dtype": "float64"
+                },
+                "acq_weights_b": {
+                    "data": "",
+                    "shape": [
+                        0
+                    ],
+                    "dtype": "float64"
+                },
+                "acq_weights_sampling_rate": 1.0,
+                "acq_weight_type": "SSB",
+                "acq_rotation": 0,
+                "acq_threshold": 0,
+                "name": "measure"
+            },
+            "ports": {
+                "microwave": "q1:mw",
+                "flux": "q1:fl",
+                "readout": "q1:res",
+                "name": "ports"
+            },
+            "clock_freqs": {
+                "f01": 0,
+                "f12": 0,
+                "readout": 0,
+                "name": "clock_freqs"
+            },
+            "element_type": "BasicTransmonElement"
+        }
+    },
+    "edges": {
+        "q0_q1": {
+            "parent_element_name": "q0",
+            "child_element_name": "q1",
+            "cz": {
+                "square_amp": 0.1,
+                "square_duration": 4e-08,
+                "name": "cz",
+                "parent_phase_correction": 10,
+                "child_phase_correction": 11
+            },
+            "edge_type": "CompositeSquareEdge",
+            "name": "q0_q1"
+        }
+    },
+    "cfg_sched_repetitions": 1024
+}

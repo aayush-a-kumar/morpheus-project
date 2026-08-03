@@ -1,0 +1,57 @@
+{
+    "config_type": "QbloxHardwareCompilationConfig",
+    "hardware_description": {
+        "cluster": {
+            "instrument_type": "Cluster",
+            "modules": {
+                "2": {
+                    "instrument_type": "QCM"
+                },
+                "4": {
+                    "instrument_type": "QRM"
+                }
+            },
+            "sequence_to_file": false,
+            "ref": "internal",
+            "ip": null
+        }
+    },
+    "hardware_options": {
+        "modulation_frequencies": {
+            "q0:mw-q0.01": {
+                "interm_freq": 30e6
+            },
+            "q0:res-q0.ro": {
+                "interm_freq": 60e6
+            }
+        }
+    },
+    "connectivity": {
+        "graph": [
+            [
+                "cluster.module2.digital_output_0",
+                "q0:marker"
+            ],
+            [
+                "cluster.module4.complex_output_0",
+                "q0:res"
+            ],
+            [
+                "cluster.module2.complex_output_0",
+                "q0:mw"
+            ],
+            [
+                "cluster.module2.complex_output_1",
+                "q1:mw"
+            ],
+            [
+                "cluster.module4.complex_output_0",
+                "q1:res"
+            ],
+            [
+                "cluster.module4.complex_output_0",
+                "all:res"
+            ]
+        ]
+    }
+}
