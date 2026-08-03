@@ -253,12 +253,16 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
         return val
 
     def simulate(self, schedule: Schedule, initial_state: qutip.Qobj = None):
+
+        #1. grab uncompiled oerations first to preserve Variable objects
+        uncompiled_ops = self._flatten_operations(schedule.operations)
+        #2. compile schedule 
         timing_table, operations_dict = self._get_compiled_schedule(schedule)
         
-        # 1. Flatten operations to find all nested ones
+        # 3. Flatten operations to find all nested ones
         all_ops = self._flatten_operations(operations_dict)
         
-        # 2. Find all loops and their domains
+        # 4. Find all loops and their domains
         loops = self._find_loops(operations_dict)
         
         pulses = timing_table[timing_table['is_acquisition'] == False].copy()
@@ -273,7 +277,9 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
             for _, row in df.iterrows():
                 t = row['abs_time']
                 op_hash = row['operation_hash']
-                op = all_ops.get(op_hash, {})
+
+                # Check uncompiled ops FIRST so we get the Variable object, not 0.0
+                op = uncompiled_ops.get(op_hash, all_ops.get(op_hash, {}))
                 data = op.data if hasattr(op, 'data') else op
                 
                 # Identify loop iterations for this pulse
@@ -299,7 +305,9 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                 
                 if p_info_list:
                     p_info = p_info_list[0]
-                    a = self._resolve_value(p_info.get('amplitude', 0.0), mapping)
+                    #NOTE: amp wasn't a valid key so it always returned 0.0
+                    raw_amp = p_info.get('amplitude', p_info.get('amp', 0.0))
+                    a = self._resolve_value(raw_amp, mapping)
                     p = self._resolve_value(p_info.get('phase', 0.0), mapping)
                     dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
                     wf = p_info.get('wf_func', 'square')
@@ -308,7 +316,8 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                 resolved_phases.append(p)
                 resolved_durations.append(dur)
                 resolved_wfs.append(wf)
-            
+
+            df['amplitude'] = resolved_amps #quick fix: assign to both keys
             df['amp'] = resolved_amps
             df['phase'] = resolved_phases
             df['duration'] = resolved_durations

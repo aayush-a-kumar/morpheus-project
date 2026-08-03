@@ -16,7 +16,7 @@ def test_t1_relaxation(default_qubit_params):
     # Empty schedule to let state decay freely for 10 us (2 * T1)
     sched = Schedule("T1 Decay")
     sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
-    sched.add(SquarePulse(amp=0.0, duration=10e-6, port="q0:mw", clock="q0.01"))
+    sched.add(SquarePulse(amplitude=0.0, duration=10e-6, port="q0:mw", clock="q0.01"))
     
     res = sim.simulate(sched, initial_state=state_1)
     final_state = res['result'].states[-1]
@@ -33,7 +33,7 @@ def test_rabi_pulse_inversion(default_qubit_params):
     # 0.1V pulse for 100ns with 50MHz/V drive strength = Pi rotation
     sched = Schedule("Pi Pulse")
     sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
-    sched.add(SquarePulse(amp=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
+    sched.add(SquarePulse(amplitude=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
     
     res = sim.simulate(sched)
     final_state = res['result'].states[-1]
@@ -48,7 +48,7 @@ def test_resonator_photon_population(default_qubit_params):
     
     sched = Schedule("Readout Cavity Drive")
     sched.add_resource(ClockResource(name="q0.ro", freq=default_qubit_params['f_res']))
-    sched.add(SquarePulse(amp=0.2, duration=300e-9, port="q0:res", clock="q0.ro"))
+    sched.add(SquarePulse(amplitude=0.2, duration=300e-9, port="q0:res", clock="q0.ro"))
     
     res = sim.simulate(sched)
     final_state = res['result'].states[-1]

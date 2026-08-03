@@ -30,9 +30,9 @@ def run_loop_simulation():
     
     with sched.loop(amp_domain) as amp:
         # 50ns pulse
-        sched.add(SquarePulse(amp=amp, duration=50e-9, port="q0:mw", clock="q0.01"))
+        sched.add(SquarePulse(amplitude=amp, duration=50e-9, port="q0:mw", clock="q0.01"))
         # 50ns wait
-        sched.add(SquarePulse(amp=0, duration=50e-9, port="q0:mw", clock="q0.01"))
+        sched.add(SquarePulse(amplitude=0, duration=50e-9, port="q0:mw", clock="q0.01"))
 
     # 3. Setup Loop Simulator
     sim = QbloxLoopSimulator(params)
