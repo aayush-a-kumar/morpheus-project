@@ -1,9 +1,11 @@
-qblox-scheduler>=0.1.0b1
-qutip
-numpy
+qblox-instruments==1.1.1
+qblox-scheduler==1.0.0b3
+q1simulator
+qutip>=4.7.0
+numpy>=1.22.0, <2.0.0
+scipy
 pandas
 matplotlib
-scipy
 pytest
 jupyter
-q1simulator
+ipykernel
