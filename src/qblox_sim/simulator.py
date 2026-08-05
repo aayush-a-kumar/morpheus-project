@@ -13,13 +13,21 @@ class QbloxQutipSimulator:
     the dynamics of a qubit coupled to a readout resonator.
     """
 
-    def __init__(self, params: dict, configs: dict = None):
+    def __init__(self, params: dict, configs: typing.Optional[dict] = None):
         self.params = params
         self.configs = configs
+        
+        # System Frequencies & Parameters
         self.f_q = params.get('f_q', 5.0e9)
         self.f_d = params.get('f_d', self.f_q)
         self.f_res = params.get('f_res', 6.0e9)
+        self.f_d_res = params.get('f_d_res', self.f_res)
         self.chi = params.get('chi', 1.0e6)
+        
+        # Transmon Hilbert Space Dimensions & Anharmonicity
+        self.N_q = params.get('N_q', 3)          # Default to 3 levels for transmon
+        self.alpha = params.get('alpha', -300.0e6) # Anharmonicity in Hz
+        
         self.rabi_freq_per_volt = params.get('rabi_freq_per_volt', 10.0e6)
         self.rabi_freq_res_per_volt = params.get('rabi_freq_res_per_volt', 10.0e6)
         self.T1 = params.get('T1', np.inf)
@@ -27,19 +35,87 @@ class QbloxQutipSimulator:
         self.kappa = params.get('kappa', 1e6)
         self.N_res = params.get('N_res', 5)
 
-        # Operators in the joint Hilbert space
-        self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
-        self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
-        self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
-        self.sm = qutip.tensor(qutip.sigmam(), qutip.identity(self.N_res))
+        # -------------------------------------------------------------
+        # Transmon & Readout Operators (Hilbert Space: N_q x N_res)
+        # -------------------------------------------------------------
         
-        self.a = qutip.tensor(qutip.identity(2), qutip.destroy(self.N_res))
+        # Transmon ladder / lowering operator
+        self.b = qutip.tensor(qutip.destroy(self.N_q), qutip.identity(self.N_res))
+        self.bd = self.b.dag()
+        # Qubit number operator (b^\dagger b)
+        self.nq = self.bd * self.b  #type: ignore
+
+        # Readout Cavity operators
+        self.a = qutip.tensor(qutip.identity(self.N_q), qutip.destroy(self.N_res))
         self.ad = self.a.dag()
-        self.n = self.ad * self.a
+        self.n = self.ad * self.a #type: ignore
+
+        # -------------------------------------------------------------
+        # Backward-Compatible Pauli / Subspace Operators
+        # -------------------------------------------------------------
+        # Lowering operator (takes |1> -> |0> and |2> -> |1>)
+        self.sm = self.b
+        
+        if self.N_q == 2:
+            # Exact 2-level Pauli matrices
+            self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
+            self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
+            self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
+        else:
+            # Generalized drive quadratures for N_q >= 3
+            self.sx = self.b + self.bd
+            self.sy = 1j * (self.bd - self.b)
+            
+            # Generalized sz projecting onto {|0>, |1>} computational subspace
+            proj_0 = qutip.tensor(qutip.basis(self.N_q, 0) * qutip.basis(self.N_q, 0).dag(), qutip.identity(self.N_res)) #type: ignore
+            proj_1 = qutip.tensor(qutip.basis(self.N_q, 1) * qutip.basis(self.N_q, 1).dag(), qutip.identity(self.N_res)) #type: ignore
+            self.sz = proj_0 - proj_1
+
+    @staticmethod
+    def _extract_amplitude(source: typing.Union[dict, pd.Series], default: typing.Any = 0.0) -> typing.Any:
+        """Safely extract amplitude from a dict or pandas Series, handling None and NaN values.
+        Preserves Variable objects for symbolic/loop resolution.
+        """
+        # Type narrowing: only call .to_dict() if source is a pd.Series
+        d = source.to_dict() if isinstance(source, pd.Series) else source
+        
+        if isinstance(d, dict):
+            for key in ('amplitude', 'amp'):
+                val = d.get(key)
+                if val is not None:
+                    try:
+                        if not pd.isna(val):
+                            return val
+                    except Exception:
+                        return val
+        return default
+
+    def _flatten_operations(self, operations_dict: dict, all_ops: typing.Optional[dict] = None) -> dict:
+        """Recursively flatten nested schedule operations dictionary."""
+        if all_ops is None:
+            all_ops = {}
+        for h, op in operations_dict.items():
+            all_ops[h] = op
+            body = getattr(op, 'body', None)
+            if body is not None and hasattr(body, 'operations'):
+                self._flatten_operations(getattr(body, 'operations'), all_ops)
+            elif hasattr(op, 'operations'):
+                self._flatten_operations(getattr(op, 'operations'), all_ops)
+        return all_ops
+
+    def _get_op_from_hash(self, op_hash: typing.Any, ops_dict: dict) -> dict:
+        """Retrieve operation dictionary cleanly with string/int hash fallback."""
+        op = ops_dict.get(op_hash)
+        if op is None and isinstance(op_hash, (int, str)):
+            try:
+                op = ops_dict.get(int(op_hash)) or ops_dict.get(str(op_hash))
+            except ValueError:
+                pass
+        return op if op is not None else {}
 
     def _get_compiled_schedule(self, schedule: Schedule) -> typing.Tuple[pd.DataFrame, dict]:
         try:
-            return schedule.timing_table.data, schedule.operations
+            return schedule.timing_table.data, schedule.operations # type: ignore[attr-defined]
         except Exception:
             device = QuantumDevice(name="dummy_device")
             try:
@@ -49,26 +125,25 @@ class QbloxQutipSimulator:
                 pass
             compiler = SerialCompiler(name="compiler", quantum_device=device)
             compiled_sched = compiler.compile(schedule)
-            return compiled_sched.timing_table.data, compiled_sched.operations
+            return compiled_sched.timing_table.data, compiled_sched.operations # type: ignore[attr-defined]
 
     def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
-        t_start = pulse_info['abs_time']
+        t_start = pulse_info['abs_time'] 
         duration = pulse_info['duration']
         t_rel = t - t_start
         
         if t_rel < 0 or t_rel > duration:
             return 0.0j
         
-        amp = pulse_info.get('amp', 0.0)
+        amp = self._extract_amplitude(pulse_info)
         phase_deg = pulse_info.get('phase', 0.0)
         phase_rad = np.deg2rad(phase_deg)
+
+        #janky waveform function handling 
+        wf_raw = pulse_info.get('wf_func')
+        wf_func = str(wf_raw).lower() if wf_raw else 'square'
         
-        wf_func = str(pulse_info.get('wf_func', 'square')).lower()
-        
-        envelope = 0.0
-        if 'square' in wf_func:
-            envelope = amp
-        elif 'gauss' in wf_func:
+        if 'gauss' in wf_func:
             sigma = pulse_info.get('sigma', duration / 4)
             if sigma is None: sigma = duration / 4
             if sigma == 0: sigma = 1e-12
@@ -83,11 +158,15 @@ class QbloxQutipSimulator:
             envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
             envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
             return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
+        else:
+            # Default to square pulse for any unspecified or square waveform
+            envelope = amp
         
         return envelope * np.exp(1j * phase_rad)
 
-    def simulate(self, schedule: Schedule, initial_state: qutip.Qobj = None):
-        timing_table, operations_dict = self._get_compiled_schedule(schedule)
+    def simulate(self, schedule: Schedule, initial_state: typing.Optional[qutip.Qobj] = None):
+        timing_table, raw_operations_dict = self._get_compiled_schedule(schedule)
+        operations_dict = self._flatten_operations(raw_operations_dict)
         
         pulses = timing_table[timing_table['is_acquisition'] == False].copy()
         acquisitions = timing_table[timing_table['is_acquisition'] == True]
@@ -99,11 +178,11 @@ class QbloxQutipSimulator:
         wfs = []
         for _, row in pulses.iterrows():
             op_hash = row['operation_hash']
-            op = operations_dict.get(op_hash, {})
+            op = self._get_op_from_hash(op_hash, operations_dict)
             # Handle both quantify-style and older/newer qblox-style
-            data = op.data if hasattr(op, 'data') else op
+            data = getattr(op, 'data', op) if hasattr(op, 'data') else op
             
-            a = 0.0
+            a = self._extract_amplitude(row)
             p = 0.0
             dur = row['duration']
             wf = 'square'
@@ -123,7 +202,7 @@ class QbloxQutipSimulator:
                 p_info = p_info_list[0] 
                 if isinstance(p_info, dict):
                     if a == 0:
-                        a = p_info.get('amp', p_info.get('amplitude', 0.0))
+                        a = self._extract_amplitude(p_info)
                     p = p_info.get('phase', 0.0)
                     dur = p_info.get('duration', dur)
                     wf = p_info.get('wf_func', 'square')
@@ -133,6 +212,7 @@ class QbloxQutipSimulator:
             durations.append(dur)
             wfs.append(wf)
             
+        pulses['amplitude'] = amps
         pulses['amp'] = amps
         pulses['phase'] = phases
         pulses['duration'] = durations
@@ -141,68 +221,150 @@ class QbloxQutipSimulator:
         return self._simulate_processed(pulses, acquisitions, initial_state)
 
     def _simulate_processed(self, pulses, acquisitions, initial_state=None):
-        if len(pulses) == 0:
+        # 1. Normalize pulse time units to seconds
+        pulses_list = pulses.to_dict('records')
+        for p in pulses_list:
+            p['abs_time'] = p['abs_time'] * 1e-9 if p['abs_time'] > 1e-3 else p['abs_time']
+            p['duration'] = p['duration'] * 1e-9 if p['duration'] > 1e-3 else p['duration']
+
+        # 2. Determine total simulation duration
+        if len(pulses_list) == 0:
             total_duration = 1e-6
         else:
-            total_duration = pulses['abs_time'].max() + pulses['duration'].max()
-        if len(acquisitions) > 0:
-            total_duration = max(total_duration, acquisitions['abs_time'].max() + acquisitions['duration'].max())
+            total_duration = max(p['abs_time'] + p['duration'] for p in pulses_list)
 
-        t_list = np.linspace(0, total_duration, max(500, int(total_duration / 1e-9)))
+        if len(acquisitions) > 0:
+            acq_max = acquisitions['abs_time'].max() + acquisitions['duration'].max()
+            acq_max = acq_max * 1e-9 if acq_max > 1e-3 else acq_max
+            total_duration = max(total_duration, acq_max)
+
+        # 3. Create a STRICTLY UNIFORM time grid (0.1 ns resolution)
+        step_size = 0.1e-9  # 0.1 ns step
+        num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
+        t_list = np.linspace(0, total_duration, num_points)
+
         if initial_state is None:
-            initial_state = qutip.tensor(qutip.basis(2, 0), qutip.basis(self.N_res, 0))
+            initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
             
+        # 4. Helper to evaluate drive envelope at time t
         def get_drive(t, port_name, pulses_list):
             val = 0.0j
             eps = 1e-13
             for p in pulses_list:
                 if p['port'] == port_name:
-                    if p['abs_time'] - eps <= t <= p['abs_time'] + p['duration'] + eps:
+                    t_start = p['abs_time']
+                    duration = p['duration']
+                    if t_start - eps <= t <= t_start + duration + eps:
                         val += self._pulse_envelope(t, p)
             return val
         
-        pulses_list = pulses.to_dict('records')
+        # 5. Pre-sample drive signals into 1D NumPy arrays matching t_list exactly
+        q_drive = np.array([get_drive(t, 'q0:mw', pulses_list) for t in t_list])
+        res_drive = np.array([get_drive(t, 'q0:res', pulses_list) for t in t_list])
+
+        qubit_drive_i = np.real(q_drive)
+        qubit_drive_q = np.imag(q_drive)
+        res_drive_i = np.real(res_drive)
+        res_drive_q = np.imag(res_drive)
+
         omega_q = 2 * np.pi * self.rabi_freq_per_volt
         omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
-        delta = 2 * np.pi * (self.f_q - self.f_d)
-        h_static = (delta / 2) * self.sz + 2 * np.pi * self.chi * self.n * self.sz
         
-        def qubit_drive_i(t, args): return np.real(get_drive(t, 'q0:mw', args['pulses']))
-        def qubit_drive_q(t, args): return np.imag(get_drive(t, 'q0:mw', args['pulses']))
-        def res_drive_i(t, args): return np.real(get_drive(t, 'q0:res', args['pulses']))
-        def res_drive_q(t, args): return np.imag(get_drive(t, 'q0:res', args['pulses']))
+        delta_q = 2 * np.pi * (self.f_q - self.f_d)
+        delta_res = 2 * np.pi * (self.f_res - self.f_d_res)
         
+        # --- TRANSMON HAMILTONIAN WITH ANHARMONICITY ---
+        h_static = (
+            -delta_q * self.nq 
+            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b) #type: ignore
+            + delta_res * self.n 
+            + 2 * np.pi * self.chi * self.n * self.nq
+        )
+
         h = [
             h_static,
-            [self.sx * (omega_q / 2), qubit_drive_i],
-            [self.sy * (omega_q / 2), qubit_drive_q],
-            [self.a + self.ad, lambda t, args: (omega_res / 2) * res_drive_i(t, args)],
-            [1j * (self.ad - self.a), lambda t, args: (omega_res / 2) * res_drive_q(t, args)]
+            [(self.b + self.bd) * (omega_q / 2), qubit_drive_i],
+            [1j * (self.bd - self.b) * (omega_q / 2), qubit_drive_q],
+            [(self.a + self.ad) * (omega_res / 2), res_drive_i],
+            [1j * (self.ad - self.a) * (omega_res / 2), res_drive_q]
         ]
         
         c_ops = []
-        if self.T1 < np.inf: c_ops.append(np.sqrt(1.0 / self.T1) * self.sm)
+        if self.T1 < np.inf: 
+            c_ops.append(np.sqrt(1.0 / self.T1) * self.b)
+            
         if self.T2 < np.inf:
             gamma_phi = (1.0 / self.T2) - (0.5 / self.T1 if self.T1 < np.inf else 0)
-            if gamma_phi > 0: c_ops.append(np.sqrt(2 * gamma_phi) * self.sz / 2.0)
-        if self.kappa > 0: c_ops.append(np.sqrt(self.kappa) * self.a)
+            if gamma_phi > 0: 
+                c_ops.append(np.sqrt(2 * gamma_phi) * self.nq)
                 
-        result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, args={'pulses': pulses_list})
-        
+        if self.kappa > 0: 
+            c_ops.append(np.sqrt(self.kappa) * self.a)
+
+        # 6. Execute solver
+        options = {"nsteps": 500000}
+        result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, options=options)
+
+        # 7. Measurement extraction
         measurements = []
         for _, acq in acquisitions.iterrows():
             acq_time = acq['abs_time']
+            acq_time = acq_time * 1e-9 if acq_time > 1e-3 else acq_time
             idx = np.argmin(np.abs(t_list - acq_time))
             state = result.states[idx]
+            
             rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
-            prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(2, 1)), rho_q))
+            
+            prob_0 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q))
+            prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q))
+            prob_2 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q)) if self.N_q >= 3 else 0.0
+            
             measurements.append({
                 'name': acq.get('acq_index', acq.get('acq_channel', 'acq')),
-                'time': acq_time, 'prob_1': prob_1,
+                'time': acq_time, 
+                'prob_0': prob_0,
+                'prob_1': prob_1,
+                'leakage_prob_2': prob_2,
                 'outcome': 1 if np.random.random() < prob_1 else 0
             })
+
+        # 8. Wrap output in SimulationResult container
+        result_container = SimulationResult(
+            states=result.states if result is not None else [],
+            t_list=t_list,
+            measurements=measurements,
+            simulator=self
+        )
             
-        return {'result': result, 't_list': t_list, 'measurements': measurements}
+        return {
+            'result': result_container, 
+            't_list': t_list, 
+            'measurements': measurements
+        }
+
+
+class SimulationResult:
+    """Clean container for stitched time-series simulation outputs."""
+    def __init__(
+        self, 
+        states: list, 
+        t_list: np.ndarray, 
+        measurements: list,
+        simulator: typing.Optional[typing.Any] = None
+    ):
+        self.states = states
+        self.t_list = t_list
+        self.measurements = measurements
+        # Explicit attribute declaration for type checkers
+        self._sim: typing.Optional[typing.Any] = simulator
+
+    def get_expectation(self, operator: str = 'sz') -> np.ndarray:
+        """Helper to extract expectation values without worrying about N_q dimensions."""
+        op = getattr(self._sim, operator, None) if self._sim else None
+        if op is None:
+            raise ValueError(f"Operator '{operator}' not found on simulator.")
+            
+        return np.array([qutip.expect(op, s).real for s in self.states])
 
 class QbloxLoopSimulator(QbloxQutipSimulator):
     """
@@ -210,13 +372,13 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
     It unrolls the loops and resolves variable parameters before simulation.
     """
 
-    def _flatten_operations(self, operations_dict: dict, all_ops: dict = None) -> dict:
+    def _flatten_operations(self, operations_dict: dict, all_ops: typing.Optional[dict] = None) -> dict:
         if all_ops is None:
             all_ops = {}
         for h, op in operations_dict.items():
             all_ops[h] = op
             if isinstance(op, LoopOperation):
-                self._flatten_operations(op.body.operations, all_ops)
+                self._flatten_operations(op.body.operations, all_ops) # type: ignore
             elif hasattr(op, 'operations'): # Nested Schedule
                 self._flatten_operations(op.operations, all_ops)
         return all_ops
@@ -237,7 +399,7 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                     'domain': cf_info.get('domain', {})
                 })
                 # Recursively find nested loops in body
-                loops.extend(self._find_loops(op.body.operations, offset + t0))
+                loops.extend(self._find_loops(op.body.operations, offset + t0)) #type: ignore
             elif hasattr(op, 'operations'):
                 t0 = op.data.get('t0', 0.0) if hasattr(op, 'data') else 0.0
                 loops.extend(self._find_loops(op.operations, offset + t0))
@@ -246,144 +408,120 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
     def _resolve_value(self, val, mapping: dict):
         if hasattr(val, 'substitute'):
             return val.substitute(mapping)
+        if hasattr(val, 'name') and val.name in mapping:
+            return mapping[val.name]
         return val
 
-    def simulate(self, schedule: Schedule, initial_state: qutip.Qobj = None):
+    def simulate(self, schedule: Schedule, initial_state: typing.Optional[qutip.Qobj] = None) -> dict:
+        uncompiled_ops = self._flatten_operations(schedule.operations)
         timing_table, operations_dict = self._get_compiled_schedule(schedule)
-        
-        # 1. Flatten operations to find all nested ones
-        all_ops = self._flatten_operations(operations_dict)
-        
-        # 2. Find all loops and their domains
         loops = self._find_loops(operations_dict)
-        
+
         pulses = timing_table[timing_table['is_acquisition'] == False].copy()
         acquisitions = timing_table[timing_table['is_acquisition'] == True].copy()
-        
-        def process_rows(df):
-            resolved_amps = []
-            resolved_phases = []
-            resolved_durations = []
-            resolved_wfs = []
-            
-            for _, row in df.iterrows():
-                t = row['abs_time']
-                op_hash = row['operation_hash']
-                op = all_ops.get(op_hash, {})
-                data = op.data if hasattr(op, 'data') else op
-                
-                # Identify loop iterations for this pulse
-                mapping = {}
-                for l in loops:
-                    if l['t_start'] <= t < l['t_end'] + 1e-15:
-                        it_idx = int((t - l['t_start']) // l['iteration_duration'])
-                        # Cap it_idx to repetitions - 1 to avoid floating point issues at boundaries
-                        repetitions = l['op'].data.get('control_flow_info', {}).get('repetitions', 1)
-                        it_idx = min(it_idx, repetitions - 1)
-                        
-                        for var, domain in l['domain'].items():
-                            # Resolve LinearDomain value for this iteration
-                            val = domain.start + it_idx * (domain.stop - domain.start) / (domain.num - 1) if domain.num > 1 else domain.start
-                            mapping[var] = val
-                
-                # Extract and resolve pulse info
-                a, p, dur, wf = 0.0, 0.0, row['duration'], 'square'
-                p_info_list = data.get('pulse_info', [])
-                if isinstance(p_info_list, dict): p_info_list = [p_info_list]
-                
-                if p_info_list:
-                    p_info = p_info_list[0]
-                    a = self._resolve_value(p_info.get('amp', 0.0), mapping)
-                    p = self._resolve_value(p_info.get('phase', 0.0), mapping)
-                    dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
-                    wf = p_info.get('wf_func', 'square')
-                
-                resolved_amps.append(a)
-                resolved_phases.append(p)
-                resolved_durations.append(dur)
-                resolved_wfs.append(wf)
-            
-            df['amp'] = resolved_amps
-            df['phase'] = resolved_phases
-            df['duration'] = resolved_durations
-            df['wf_func'] = resolved_wfs
-            return df
 
-        pulses = process_rows(pulses)
-        # Acquisitions might also have variables (e.g. acq_index)
-        # but for now we focus on pulses for physics.
-        
-        # Re-use the physics simulation from the base class
-        # We need to bypass its own 'pulses' extraction logic.
-        # So we'll call a version of simulate that accepts pre-processed pulses.
+        # 1. Unroll symbolic loop variables onto pulse dataframe
+        pulses = self._resolve_loop_pulses(pulses, uncompiled_ops, loops)
+
+        # 2. Route to shot sweep or single execution
+        if loops:
+            return self._simulate_shot_sweep(pulses, acquisitions, loops, initial_state)
         return self._simulate_processed(pulses, acquisitions, initial_state)
 
-    def _simulate_processed(self, pulses, acquisitions, initial_state=None):
-        # This is a copy-paste of the physics part of QbloxQutipSimulator.simulate
-        # In a real refactor, I would extract this part in the base class.
-        
-        if len(pulses) == 0:
-            total_duration = 1e-6
-        else:
-            total_duration = pulses['abs_time'].max() + pulses['duration'].max()
-        if len(acquisitions) > 0:
-            total_duration = max(total_duration, acquisitions['abs_time'].max() + acquisitions['duration'].max())
+    def _resolve_loop_pulses(self, pulses: pd.DataFrame, uncompiled_ops: dict, loops: list) -> pd.DataFrame:
+        """Resolve symbolic Variable parameters (amp, phase, duration) for every pulse row."""
+        resolved_amps, resolved_phases, resolved_durations, resolved_wfs = [], [], [], []
 
-        t_list = np.linspace(0, total_duration, max(500, int(total_duration / 1e-9)))
-        if initial_state is None:
-            initial_state = qutip.tensor(qutip.basis(2, 0), qutip.basis(self.N_res, 0))
-            
-        def get_drive(t, port_name, pulses_list):
-            val = 0.0j
-            eps = 1e-13
-            for p in pulses_list:
-                if p['port'] == port_name:
-                    if p['abs_time'] - eps <= t <= p['abs_time'] + p['duration'] + eps:
-                        val += self._pulse_envelope(t, p)
-            return val
-        
-        pulses_list = pulses.to_dict('records')
-        omega_q = 2 * np.pi * self.rabi_freq_per_volt
-        omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
-        delta = 2 * np.pi * (self.f_q - self.f_d)
-        h_static = (delta / 2) * self.sz + 2 * np.pi * self.chi * self.n * self.sz
-        
-        def qubit_drive_i(t, args): return np.real(get_drive(t, 'q0:mw', args['pulses']))
-        def qubit_drive_q(t, args): return np.imag(get_drive(t, 'q0:mw', args['pulses']))
-        def res_drive_i(t, args): return np.real(get_drive(t, 'q0:res', args['pulses']))
-        def res_drive_q(t, args): return np.imag(get_drive(t, 'q0:res', args['pulses']))
-        
-        h = [
-            h_static,
-            [self.sx * (omega_q / 2), qubit_drive_i],
-            [self.sy * (omega_q / 2), qubit_drive_q],
-            [self.a + self.ad, lambda t, args: (omega_res / 2) * res_drive_i(t, args)],
-            [1j * (self.ad - self.a), lambda t, args: (omega_res / 2) * res_drive_q(t, args)]
-        ]
-        
-        c_ops = []
-        if self.T1 < np.inf: c_ops.append(np.sqrt(1.0 / self.T1) * self.sm)
-        if self.T2 < np.inf:
-            gamma_phi = (1.0 / self.T2) - (0.5 / self.T1 if self.T1 < np.inf else 0)
-            if gamma_phi > 0: c_ops.append(np.sqrt(2 * gamma_phi) * self.sz / 2.0)
-        if self.kappa > 0: c_ops.append(np.sqrt(2 * np.pi * self.kappa) * self.a)
+        for _, row in pulses.iterrows():
+            t = row['abs_time']
+            op_hash = row['operation_hash']
+            op = self._get_op_from_hash(op_hash, uncompiled_ops)
+            data = getattr(op, 'data', op) if hasattr(op, 'data') else op
+
+            mapping = {}
+            for l in loops:
+                if l['t_start'] <= t < l['t_end'] + 1e-15:
+                    it_idx = int((t - l['t_start']) // l['iteration_duration'])
+                    repetitions = l['op'].data.get('control_flow_info', {}).get('repetitions', 1)
+                    it_idx = min(it_idx, repetitions - 1)
+                    
+                    for var, domain in l['domain'].items():
+                        val = domain.start + it_idx * (domain.stop - domain.start) / (domain.num - 1) if domain.num > 1 else domain.start
+                        mapping[var] = val
+                        if hasattr(var, 'name'): 
+                            mapping[var.name] = val
+
+            a, p, dur, wf = 0.0, 0.0, row['duration'], 'square'
+            p_info_list = data.get('pulse_info', [])
+            if isinstance(p_info_list, dict): 
+                p_info_list = [p_info_list]
                 
-        result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, args={'pulses': pulses_list})
-        
-        measurements = []
-        for _, acq in acquisitions.iterrows():
-            acq_time = acq['abs_time']
-            idx = np.argmin(np.abs(t_list - acq_time))
-            state = result.states[idx]
-            rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
-            prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(2, 1)), rho_q))
-            measurements.append({
-                'name': acq.get('acq_index', acq.get('acq_channel', 'acq')),
-                'time': acq_time, 'prob_1': prob_1,
-                'outcome': 1 if np.random.random() < prob_1 else 0
-            })
-            
-        return {'result': result, 't_list': t_list, 'measurements': measurements}
+            if p_info_list:
+                p_info = p_info_list[0]
+                raw_amp = self._extract_amplitude(p_info)
+                a = self._resolve_value(raw_amp, mapping)
+                p = self._resolve_value(p_info.get('phase', 0.0), mapping)
+                dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
+                wf = p_info.get('wf_func', 'square')
+
+            resolved_amps.append(a)
+            resolved_phases.append(p)
+            resolved_durations.append(dur)
+            resolved_wfs.append(wf)
+
+        pulses['amplitude'] = resolved_amps
+        pulses['amp'] = resolved_amps
+        pulses['phase'] = resolved_phases
+        pulses['duration'] = resolved_durations
+        pulses['wf_func'] = resolved_wfs
+        return pulses
+
+    def _simulate_shot_sweep(
+        self, 
+        pulses: pd.DataFrame, 
+        acquisitions: pd.DataFrame, 
+        loops: list, 
+        initial_state: typing.Optional[qutip.Qobj]
+    ) -> dict:
+        """Simulate each loop iteration as an independent experiment shot re-initialized from initial_state."""
+        loop_start = loops[0]['t_start']
+        loop_duration = loops[0]['iteration_duration']
+        num_iterations = loops[0]['op'].data.get('control_flow_info', {}).get('repetitions', 1)
+
+        all_results = []
+        combined_t_list = []
+        combined_states = []
+
+        for it in range(num_iterations):
+            it_start = loop_start + it * loop_duration
+            it_end = loop_start + (it + 1) * loop_duration
+
+            it_pulses = pulses[(pulses['abs_time'] >= it_start - 1e-12) & (pulses['abs_time'] < it_end - 1e-12)].copy()
+            it_pulses['abs_time'] -= it_start
+
+            it_acq = acquisitions[(acquisitions['abs_time'] >= it_start - 1e-12) & (acquisitions['abs_time'] < it_end - 1e-12)].copy()
+            if len(it_acq) > 0:
+                it_acq['abs_time'] -= it_start
+
+            res = self._simulate_processed(it_pulses, it_acq, initial_state=initial_state)
+            all_results.append(res)
+
+            # Deduplicate boundary points: drop final point of all iterations except the last
+            is_last = (it == num_iterations - 1)
+            t_slice = res['t_list'] if is_last else res['t_list'][:-1]
+            state_slice = res['result'].states if is_last else res['result'].states[:-1]
+
+            combined_t_list.append(t_slice + it_start)
+            combined_states.extend(state_slice)
+
+        final_t_list = np.concatenate(combined_t_list)
+        result_container = SimulationResult(combined_states, final_t_list, [m for r in all_results for m in r['measurements']], simulator=self)
+
+        return {
+            'result': result_container,
+            't_list': final_t_list,
+            'measurements': result_container.measurements
+        }
 
 from q1simulator import Cluster
 
@@ -394,20 +532,15 @@ class QbloxQ1Simulator:
     the dynamics of a qubit coupled to a readout resonator.
     """
 
-    def __init__(self, params: dict, name: str = 'cluster', modules: dict = None, hardware_config: dict = None):
-
-        # initialize a Q1 Cluster object with the given modules
+    def __init__(self, params: dict, name: str = 'cluster', modules: typing.Optional[dict] = None, hardware_config: typing.Optional[dict] = None):
         self.cluster = Cluster(name=name, modules=modules)
 
-        if hardware_config is None:
-            hardware_config = {}
-        
+        hardware_config = hardware_config or {}
         drive_config = hardware_config.get('drive', {})
         readout_config = hardware_config.get('readout', {})
         
         self.drive_mod = drive_config.get('module', 2)
         self.drive_seq = drive_config.get('sequencer', 0)
-
         self.readout_mod = readout_config.get('module', 4)
         self.readout_seq = readout_config.get('sequencer', 0)
 
@@ -418,29 +551,53 @@ class QbloxQ1Simulator:
 
         self.params = params
 
+        # System Frequencies & Coupling Parameters
         self.f_q = params.get('f_q', 5.0e9)
         self.f_d = params.get('f_d', self.f_q)
         self.f_res = params.get('f_res', 6.0e9)
+        self.f_d_res = params.get('f_d_res', self.f_res)
         self.chi = params.get('chi', 1.0e6)
+        
+        # Transmon Hilbert Space & Anharmonicity
+        self.N_q = params.get('N_q', 3)
+        self.alpha = params.get('alpha', -300.0e6)
+        
         self.rabi_freq_per_volt = params.get('rabi_freq_per_volt', 10.0e6)
         self.rabi_freq_res_per_volt = params.get('rabi_freq_res_per_volt', 10.0e6)
         self.T1 = params.get('T1', np.inf)
         self.T2 = params.get('T2', np.inf)
         self.kappa = params.get('kappa', 1e6)
-        self.N_res = params.get('N_res', 2)     # number of resonator states to simulate 
+        self.N_res = params.get('N_res', 5)
 
-        # Operators in the joint Hilbert space
-        self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
-        self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
-        self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
-        self.sm = qutip.tensor(qutip.sigmam(), qutip.identity(self.N_res))
-        
-        self.a = qutip.tensor(qutip.identity(2), qutip.destroy(self.N_res))
+        # -------------------------------------------------------------
+        # Transmon & Readout Operators (Hilbert Space: N_q x N_res)
+        # -------------------------------------------------------------
+        self.b = qutip.tensor(qutip.destroy(self.N_q), qutip.identity(self.N_res))
+        self.bd = self.b.dag()
+        self.nq = self.bd * self.b #type: ignore
+ 
+        self.a = qutip.tensor(qutip.identity(self.N_q), qutip.destroy(self.N_res))
         self.ad = self.a.dag()
-        self.n = self.ad * self.a
+        self.n = self.ad * self.a #type: ignore
 
-    def simulate(self, initial_state: qutip.Qobj = None):
+        # -------------------------------------------------------------
+        # Backward-Compatible Pauli / Subspace Operators
+        # -------------------------------------------------------------
+        self.sm = self.b
+        
+        if self.N_q == 2:
+            self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
+            self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
+            self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
+        else:
+            self.sx = self.b + self.bd
+            self.sy = 1j * (self.bd - self.b)
+            
+            proj_0 = qutip.tensor(qutip.basis(self.N_q, 0) * qutip.basis(self.N_q, 0).dag(), qutip.identity(self.N_res)) #type: ignore
+            proj_1 = qutip.tensor(qutip.basis(self.N_q, 1) * qutip.basis(self.N_q, 1).dag(), qutip.identity(self.N_res)) #type: ignore
+            self.sz = proj_0 - proj_1
 
+    def simulate(self, initial_state: typing.Optional[qutip.Qobj] = None):
         try:
             drive_pulses, readout_pulses = self.get_pulses()
         except Exception as e:
@@ -448,96 +605,98 @@ class QbloxQ1Simulator:
             drive_pulses, readout_pulses = {}, {}
         
         if self.t_max == 0:
-            print("Warning: t_max is 0, using default time range")
-            self.t_max = 500e-9  # 500 ns
-            self.t_sample = 1e-9
+            print("Warning: t_max is 0, using default time range (500 ns)")
+            self.t_max = 500  # ns
+            self.t_sample = 1 # ns
         
-        self.t_list = np.linspace(0, self.t_max, int(self.t_max/self.t_sample))*1e-9
+        # 1. Time grid strictly in seconds
+        num_points = int(round(self.t_max / self.t_sample)) if self.t_sample > 0 else 500
+        self.t_list = np.linspace(0, self.t_max * 1e-9, num_points)
 
+        # 2. Correct initial ground state matching Hilbert space (N_q x N_res)
         if initial_state is None:
-            initial_state = qutip.tensor(qutip.basis(2, 0), qutip.basis(self.N_res, 0))
+            initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
 
+        # 3. Frequencies & Detunings (in rad/s)
         omega_q = 2 * np.pi * self.rabi_freq_per_volt
         omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
-        delta = 2 * np.pi * (self.f_q - self.f_d)
-        h_static = (delta / 2) * self.sz
+        delta_q = 2 * np.pi * (self.f_q - self.f_d)
+        delta_res = 2 * np.pi * (self.f_res - self.f_d_res)
 
-        # Get pulse data - if not available, use simple Gaussian pulse
-        drive_I_data = np.array(drive_pulses.get("I", {}).get("data", []))
-        drive_Q_data = np.array(drive_pulses.get("Q", {}).get("data", []))
+        # 4. Transmon + Cavity Hamiltonian
+        h_static = (
+            -delta_q * self.nq 
+            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b) #type: ignore
+            + delta_res * self.n 
+            + 2 * np.pi * self.chi * self.n * self.nq
+        )
 
-        
-        if len(drive_I_data) == 0:
-            # Use a simple Gaussian pulse as default
-            pulse_duration = 60e-9
-            pulse_center = pulse_duration / 2
-            sigma = pulse_duration / 4
-            drive_I_data = np.exp(-((self.t_list - pulse_center)**2) / (2 * sigma**2))
-            drive_Q_data = np.zeros_like(self.t_list)
-            print("Using default Gaussian drive pulse")
-
-
-        # Create smooth interpolation functions with gentle scaling
-        def create_smooth_interp(data_array, max_scale=5):
-            """Create a smooth interpolation function with scaling"""
-            def func(t, args):
-                if t < 0 or t > self.t_max or len(data_array) == 0:
-                    return 0.0
-                # Linear interpolation between points
-                idx = t / self.t_max * (len(data_array) - 1)
-                if idx >= len(data_array) - 1:
-                    val = float(data_array[-1])
+        # Helper to align pulse arrays safely with self.t_list length
+        def safe_data(pulse_dict, key):
+            arr = np.array(pulse_dict.get(key, {}).get("data", []))
+            if len(arr) != len(self.t_list):
+                if len(arr) > 0:
+                    old_t = np.linspace(0, self.t_max * 1e-9, len(arr))
+                    arr = np.interp(self.t_list, old_t, arr)
                 else:
-                    i_low = int(idx)
-                    i_high = i_low + 1
-                    frac = idx - i_low
-                    val = float((1 - frac) * data_array[i_low] + frac * data_array[i_high])
-                # Scale down to prevent stiffness
-                return val * max_scale
-            return func
+                    arr = np.zeros_like(self.t_list)
+            return arr
 
-        #drive_I_func = create_smooth_interp(drive_I_data, max_scale=5)
-        #drive_Q_func = create_smooth_interp(drive_Q_data, max_scale=5)
+        drive_I = safe_data(drive_pulses, "I")
+        drive_Q = safe_data(drive_pulses, "Q")
+        readout_I = safe_data(readout_pulses, "I")
+        readout_Q = safe_data(readout_pulses, "Q")
 
+        # 5. Full Time-Dependent Drive Hamiltonian
         h = [
             h_static,
-            [self.sx * (omega_q / 2), drive_I_data],
-            [self.sy * (omega_q / 2), drive_Q_data],
+            [(self.b + self.bd) * (omega_q / 2), drive_I],
+            [1j * (self.bd - self.b) * (omega_q / 2), drive_Q],
+            [(self.a + self.ad) * (omega_res / 2), readout_I],
+            [1j * (self.ad - self.a) * (omega_res / 2), readout_Q]
         ]
-        
+
+        # 6. Collapse Operators
         c_ops = []
         if self.T1 < np.inf: 
-            c_ops.append(np.sqrt(1.0 / self.T1) * self.sm)
+            c_ops.append(np.sqrt(1.0 / self.T1) * self.b)
+            
         if self.T2 < np.inf:
             gamma_phi = (1.0 / self.T2) - (0.5 / self.T1 if self.T1 < np.inf else 0)
             if gamma_phi > 0: 
-                c_ops.append(np.sqrt(2 * gamma_phi) * self.sz / 2.0)
+                c_ops.append(np.sqrt(2 * gamma_phi) * self.nq)
+                
+        if self.kappa > 0: 
+            c_ops.append(np.sqrt(self.kappa) * self.a)
+
+        # 7. Solver configuration
+        options = {
+            "nsteps": 100000,
+            "max_step": 1e-9,
+            "rtol": 1e-6,
+            "atol": 1e-8,
+            "method": "bdf"
+        }
         
-        # Create solver options - very lenient for potentially stiff systems
-        # options = qutip.Options(
-        #     nsteps=5e6,  # Very high limit
-        #     rtol=1e-2,      # Very loose relative tolerance
-        #     atol=1e-4,      # Very loose absolute tolerance
-        #     method='adams'  # Non-stiff integrator
-        # )
-        
+        result = None
         try:
-            print("Starting QuTiP mesolve simulation...")
-            print(f"  - Time range: 0 to {self.t_max:.2f} ns")
-            print(f"  - Number of time points: {len(self.t_list)}")
-            result = qutip.mesolve(h, initial_state, self.t_list, c_ops=c_ops) #mesolve? 
+            print(f"Running QuTiP mesolve ({len(self.t_list)} time points)...")
+            result = qutip.mesolve(h, initial_state, self.t_list, c_ops=c_ops, options=options) 
             print("✓ Simulation completed successfully")
         except Exception as e:
             print(f"✗ Solver failed: {e}")
         
         measurements = self.get_measurements(result)
 
+        # Pass mock acquisition data back to hardware module if present
         try:
-            qrm = self.cluster.get_connected_modules()[4]
-            if measurements and len(measurements) > 0 and 'I' in measurements[0] and 'Q' in measurements[0]:
-                I = np.array([m['I'] for m in measurements])
-                Q = np.array([m['Q'] for m in measurements])
-                qrm.sequencers[0].set_acquisition_mock_data(I + 1j*Q)
+            connected = self.cluster.get_connected_modules()
+            if self.readout_mod in connected:
+                qrm = connected[self.readout_mod]
+                if measurements and 'I' in measurements[0] and 'Q' in measurements[0]:
+                    I_arr = np.array([m['I'] for m in measurements])
+                    Q_arr = np.array([m['Q'] for m in measurements])
+                    qrm.sequencers[self.readout_seq].set_acquisition_mock_data(I_arr + 1j * Q_arr)
         except Exception as e:
             print(f"Warning: Could not set acquisition mock data: {e}")
 
@@ -564,37 +723,57 @@ class QbloxQ1Simulator:
         return drive_pulses, readout_pulses
 
     def get_measurements(self, result):
+        if result is None or not hasattr(result, 'states') or len(result.states) == 0:
+            return []
 
         try:
-            acq_windows = self.cluster.get_connected_modules()[self.readout_mod].get_acquisition_windows()
+            connected = self.cluster.get_connected_modules()
+            if self.readout_mod not in connected:
+                return []
+            acq_windows = connected[self.readout_mod].get_acquisition_windows()
         except Exception as e:
             print(f"Warning: Could not get acquisition windows: {e}")
             return []
-            
-        sigma = 0.1
-        mean = 0
+
+        seq_key = f'sequencer{self.readout_seq}'
+        if seq_key not in acq_windows:
+            return []
+
+        sigma = 0.02  # Voltage noise standard deviation (V)
+        v_0 = complex(0.05, 0.05)   # Ground state |0> IQ centroid (V)
+        v_1 = complex(-0.05, -0.05) # Excited state |1> IQ centroid (V)
+
         measurements = []
-        
-        try:
-            for acq in acq_windows[f'sequencer{self.readout_seq}']:
-                try:
-                    acq_start = acq[0][0]
-                    idx = np.argmin(np.abs(self.t_list - acq_start))
-                    state = result.states[idx]
-                    rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
-                    prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(2, 1)), rho_q))
-                    I = 1/np.sqrt(2)*prob_1 * np.random.normal(mean, sigma, 1)
-                    Q = 1j*1/np.sqrt(2)*prob_1 * np.random.normal(mean, sigma, 1)
-                    measurements.append({
-                        'time': acq_start, 'prob_1': prob_1,
-                        'outcome': 1 if np.random.random() < prob_1 else 0,
-                        'I': I,
-                        'Q': Q
-                    })
-                except Exception as e:
-                    print(f"Warning: Could not process acquisition: {e}")
-                    continue
-        except Exception as e:
-            print(f"Warning: Error iterating acquisition windows: {e}")
-        
+        for acq in acq_windows[seq_key]:
+            try:
+                # Convert acquisition start time from ns to seconds
+                acq_start_sec = acq[0][0] * 1e-9
+                idx = np.argmin(np.abs(self.t_list - acq_start_sec))
+                state = result.states[idx]
+
+                # Qubit reduced density matrix
+                rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
+                
+                prob_0 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q))
+                prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q))
+                prob_2 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q)) if self.N_q >= 3 else 0.0
+
+                # Compute state-dependent voltage centroid with additive Gaussian noise
+                centroid = prob_0 * v_0 + prob_1 * v_1
+                I_val = float(np.real(centroid) + np.random.normal(0, sigma))
+                Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
+
+                measurements.append({
+                    'time': acq_start_sec,
+                    'prob_0': prob_0,
+                    'prob_1': prob_1,
+                    'leakage_prob_2': prob_2,
+                    'outcome': 1 if np.random.random() < prob_1 else 0,
+                    'I': I_val,
+                    'Q': Q_val
+                })
+            except Exception as e:
+                print(f"Warning: Could not process acquisition window: {e}")
+                continue
+
         return measurements

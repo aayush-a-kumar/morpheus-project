@@ -15,18 +15,14 @@ def run_rabi_simulation():
         'rabi_freq_per_volt': 50e6, # 50 MHz per Volt
         'T1': 20e-6, # 20 us
         'T2': 10e-6, # 10 us
+        'N_q': 3,    # 3-level transmon (default)
     }
 
     # 2. Create the Schedule
     sched = Schedule("Rabi Experiment")
-    # Add a clock resource to the schedule
     sched.add_resource(ClockResource(name="q0.01", freq=f_q))
     
-    # Add a sequence of pulses with increasing duration or amplitude
-    # For a simple Rabi trace, we can just play one long pulse
-    # or simulate a single experiment turn.
-    
-    # Example: A 100ns pulse with 0.1V amplitude
+    # 100ns pulse with 0.1V amplitude
     sched.add(GaussPulse(amplitude=0.1, phase=0, duration=100e-9, port="q0:mw", clock="q0.01"))
     
     # 3. Setup Simulator
@@ -38,19 +34,10 @@ def run_rabi_simulation():
     t_list = res_dict['t_list']
 
     # 5. Extract and Plot Results
-    # t_list is already in res_dict
-    
-    # Calculate expectation values
-    # The states are in a joint Hilbert space (2 for qubit, N_res for resonator)
-    # We trace out the resonator to get the qubit's reduced density matrix
-    expt_x = []
-    expt_y = []
-    expt_z = []
-    for s in result.states:
-        rho_q = s.ptrace(0) if s.type == 'oper' else qutip.ket2dm(s).ptrace(0)
-        expt_x.append(qutip.expect(qutip.sigmax(), rho_q).real)
-        expt_y.append(qutip.expect(qutip.sigmay(), rho_q).real)
-        expt_z.append(qutip.expect(qutip.sigmaz(), rho_q).real)
+    # FIX: Use get_expectation() on SimulationResult (dimension-agnostic for N_q=2 or N_q>=3)
+    expt_x = result.get_expectation('sx')
+    expt_y = result.get_expectation('sy')
+    expt_z = result.get_expectation('sz')
     
     plt.figure(figsize=(10, 6))
     plt.plot(t_list * 1e9, expt_x, label='<X>')
@@ -62,7 +49,6 @@ def run_rabi_simulation():
     plt.title('Rabi Pulse Simulation (Gaussian Envelope)')
     plt.legend()
     plt.grid(True)
-    # plt.show() # Disabled for headless run
     plt.savefig('rabi_simulation.png')
     print("Simulation completed successfully. Plot saved to rabi_simulation.png")
 

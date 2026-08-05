@@ -19,6 +19,7 @@ def run_loop_simulation():
         'rabi_freq_per_volt': 100e6, # 100 MHz per Volt
         'T1': 20e-6,
         'T2': 10e-6,
+        'N_q': 3,  # 3-level transmon (default)
     }
 
     # 2. Create Schedule with a loop
@@ -43,16 +44,13 @@ def run_loop_simulation():
     result = res_dict['result']
     t_list = res_dict['t_list']
 
-    # 5. Plot Results
-    expt_z = []
-    for s in result.states:
-        rho_q = s.ptrace(0) if s.type == 'oper' else qutip.ket2dm(s).ptrace(0)
-        expt_z.append(qutip.expect(qutip.sigmaz(), rho_q).real)
+    # 5. Plot Results (FIXED: Use sim.sz to support N_q >= 3)
+    expt_z = [qutip.expect(sim.sz, s).real for s in result.states]
     
     plt.figure(figsize=(10, 6))
     plt.plot(t_list * 1e9, expt_z, label='<Z>')
     
-    # Add vertical lines to show loop boundaries
+    # Add vertical lines to show loop boundaries (100 ns per shot iteration)
     for i in range(6):
         plt.axvline(x=i*100, color='gray', linestyle='--', alpha=0.5)
         

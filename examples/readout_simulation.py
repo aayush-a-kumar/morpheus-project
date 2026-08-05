@@ -28,12 +28,12 @@ def run_readout_simulation():
     # Apply a Pi-pulse to the qubit to put it in |1>
     # Pi pulse duration for 0.1V: 1 / (2 * rabi_freq_per_volt * 0.1) = 1e-7 = 100ns
     # We'll use a SquarePulse for simplicity in calculating the area
-    p1 = sched.add(SquarePulse(amplitude=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
+    p1 = sched.add(SquarePulse(amp=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
     
     # Apply a measurement pulse to the resonator (port q0:res)
     # The Measure operation itself usually defines the acquisition, 
     # but we need to manually add the pulse to the resonator port to see the physics.
-    sched.add(SquarePulse(amplitude=0.2, duration=500e-9, port="q0:res", clock="q0.ro"), 
+    sched.add(SquarePulse(amp=0.2, duration=500e-9, port="q0:res", clock="q0.ro"), 
               rel_time=10e-9, ref_op=p1, ref_pt="end")
     
     # Add the acquisition
@@ -52,7 +52,7 @@ def run_readout_simulation():
     sched_0.add_resource(ClockResource(name="q0.01", freq=params['f_q']))
     sched_0.add_resource(ClockResource(name="q0.ro", freq=params['f_res']))
     # No pi pulse, just measurement
-    sched_0.add(SquarePulse(amplitude=0.2, duration=500e-9, port="q0:res", clock="q0.ro"))
+    sched_0.add(SquarePulse(amp=0.2, duration=500e-9, port="q0:res", clock="q0.ro"))
     sched_0.add(Measure("q0", acq_index=0))
     res_dict_0 = sim.simulate(sched_0)
 

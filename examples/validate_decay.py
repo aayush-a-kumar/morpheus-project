@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import qutip
 from qblox_scheduler import Schedule
 from qblox_scheduler.operations import SquarePulse, IdlePulse
 from qblox_scheduler.resources import ClockResource
@@ -19,12 +18,11 @@ def validate_t1_decay():
         'rabi_freq_per_volt': rabi_freq,
         'T1': t1_time,
         'T2': t2_time,
-        'N_res': 2 # Keep resonator small for speed
+        'N_q': 3,   # 3-level transmon (default)
+        'N_res': 2  # Keep resonator small for speed
     }
 
     # 2. Calculate Pi-pulse (to reach |1>)
-    # For a square pulse: Area = amp * duration * rabi_freq = 0.5 (for Pi pulse in cycles)
-    # Let's use 0.1V amp -> duration = 0.5 / (0.1 * 50e6) = 100ns
     amp = 0.1
     duration = 100e-9
 
@@ -33,7 +31,7 @@ def validate_t1_decay():
     sched.add_resource(ClockResource(name="q0.01", freq=f_q))
     
     # Pi pulse
-    p1 = sched.add(SquarePulse(amplitude=amp, duration=duration, port="q0:mw", clock="q0.01"))
+    p1 = sched.add(SquarePulse(amp=amp, duration=duration, port="q0:mw", clock="q0.01"))
     
     # Long idle (4 * T1)
     sched.add(IdlePulse(duration=4 * t1_time), ref_op=p1, ref_pt="end")
@@ -45,12 +43,8 @@ def validate_t1_decay():
     result = res_dict['result']
     t_list = res_dict['t_list']
 
-    # 5. Extract Z expectation value
-    # <Z> = 1 for |0>, <Z> = -1 for |1>
-    expt_z = []
-    for s in result.states:
-        rho_q = s.ptrace(0) if s.type == 'oper' else qutip.ket2dm(s).ptrace(0)
-        expt_z.append(qutip.expect(qutip.sigmaz(), rho_q).real)
+    # 5. Extract Z expectation value (dimension-agnostic helper)
+    expt_z = result.get_expectation('sz')
 
     # 6. Theoretical Prediction
     # After the pi pulse (at t = 100ns), Z should decay as:
