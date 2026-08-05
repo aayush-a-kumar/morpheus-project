@@ -2,7 +2,9 @@ import pytest
 import numpy as np
 import pandas as pd
 import qutip
-from qblox_scheduler import Schedule, linspace, DType
+from qblox_scheduler import Schedule
+from qblox_scheduler.operations.loop_domains import linspace
+from qblox_scheduler.operations.expressions import DType
 from qblox_scheduler.operations import SquarePulse
 from qblox_scheduler.resources import ClockResource
 from qblox_sim.simulator import QbloxLoopSimulator
@@ -15,8 +17,8 @@ def test_diagnose_stage4_granular(default_qubit_params):
     sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
     amp_domain = linspace(0.0, 0.5, 5, dtype=DType.AMPLITUDE)
     with sched.loop(amp_domain) as amp:
-        sched.add(SquarePulse(amplitude=amp, duration=50e-9, port="q0:mw", clock="q0.01"))
-        sched.add(SquarePulse(amplitude=0.0, duration=50e-9, port="q0:mw", clock="q0.01"))
+        sched.add(SquarePulse(amp=amp, duration=50e-9, port="q0:mw", clock="q0.01"))
+        sched.add(SquarePulse(amp=0.0, duration=50e-9, port="q0:mw", clock="q0.01"))
 
     # Track drive calls and pulse envelope parameters
     callback_logs = []

@@ -12,7 +12,7 @@ def test_diagnose_envelope_params(default_qubit_params):
 
     sched = Schedule("Diagnostic Pi Pulse")
     sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
-    sched.add(SquarePulse(amplitude=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
+    sched.add(SquarePulse(amp=0.1, duration=100e-9, port="q0:mw", clock="q0.01"))
 
     # Save original method reference
     orig_env = sim._pulse_envelope
