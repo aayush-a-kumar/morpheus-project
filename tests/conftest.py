@@ -13,5 +13,6 @@ def default_qubit_params():
         'T1': 5.0e-6,
         'T2': 10.0e-6,
         'kappa': 2.0e6,
-        'N_res': 3
+        'N_res': 3,
+        'cable_delay': 120e-9  # 120 ns physical propagation delay
     }

@@ -6,6 +6,30 @@ from qblox_scheduler import Schedule, SerialCompiler, QuantumDevice, BasicTransm
 from qblox_scheduler.operations import SquarePulse, GaussPulse, DRAGPulse, LoopOperation
 import typing
 
+class SimulationResult:
+    """Clean container for stitched time-series simulation outputs."""
+    def __init__(
+        self, 
+        states: list, 
+        t_list: np.ndarray, 
+        measurements: list,
+        simulator: typing.Optional[typing.Any] = None
+    ):
+        self.states = states
+        self.t_list = t_list
+        self.measurements = measurements
+        # Explicit attribute declaration for type checkers
+        self._sim: typing.Optional[typing.Any] = simulator
+
+    def get_expectation(self, operator: str = 'sz') -> np.ndarray:
+        """Helper to extract expectation values without worrying about N_q dimensions."""
+        op = getattr(self._sim, operator, None) if self._sim else None
+        if op is None:
+            raise ValueError(f"Operator '{operator}' not found on simulator.")
+            
+        return np.array([qutip.expect(op, s).real for s in self.states])
+
+
 class QbloxQutipSimulator:
     # ... (existing methods)
     """
@@ -23,6 +47,7 @@ class QbloxQutipSimulator:
         self.f_res = params.get('f_res', 6.0e9)
         self.f_d_res = params.get('f_d_res', self.f_res)
         self.chi = params.get('chi', 1.0e6)
+        self.cable_delay = params.get('cable_delay', 120e-9)  # Physical propagation delay in seconds
         
         # Transmon Hilbert Space Dimensions & Anharmonicity
         self.N_q = params.get('N_q', 3)          # Default to 3 levels for transmon
@@ -71,6 +96,89 @@ class QbloxQutipSimulator:
             proj_1 = qutip.tensor(qutip.basis(self.N_q, 1) * qutip.basis(self.N_q, 1).dag(), qutip.identity(self.N_res)) #type: ignore
             self.sz = proj_0 - proj_1
 
+    # =================================----------------========================
+    # Acquisition Protocol Handlers
+    # =========================================================================
+    def _process_ssb_integration(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> typing.Tuple[complex, float, float]:
+        """
+        1. SSBIntegrationComplex Handler
+        Projects ground/excited probabilities onto complex voltage centroids with noise.
+        """
+        sigma = self.params.get('noise_sigma', 0.02)
+        v_0 = self.params.get('v_0', complex(0.05, 0.05))
+        v_1 = self.params.get('v_1', complex(-0.05, -0.05))
+
+        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
+        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+
+        centroid = prob_0 * v_0 + prob_1 * v_1
+        I_val = float(np.real(centroid) + np.random.normal(0, sigma))
+        Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
+        return I_val + 1j * Q_val, I_val, Q_val
+
+    def _process_thresholded(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> int:
+        """
+        2. ThresholdedAcquisition Handler
+        State discrimination mapping to discrete 0 or 1.
+        """
+        acq_info = acq_info or {}
+        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+
+        acq_rotation = acq_info.get('acq_rotation', None)
+        acq_threshold = acq_info.get('acq_threshold', None)
+
+        if acq_rotation is not None and acq_threshold is not None and acq_threshold != 0:
+            val, _, _ = self._process_ssb_integration(rho_q, acq_info)
+            rot_rad = np.deg2rad(acq_rotation)
+            val_rot = val * np.exp(1j * rot_rad)
+            outcome = 1 if np.real(val_rot) > acq_threshold else 0
+        else:
+            outcome = 1 if np.random.random() < prob_1 else 0
+
+        return int(outcome)
+
+    def _process_trace(
+    self, 
+    t_list: np.ndarray, 
+    states: list, 
+    acq_start_sec: float, 
+    acq_duration: float, 
+    acq_info: typing.Optional[dict] = None
+    ) -> np.ndarray:
+        r"""
+        Time of Flight (TOF) digitized time-series voltage wave <a(t) + a^\dagger(t)>.
+        """
+        acq_info = acq_info or {}
+
+        # Use acq_delay from schedule/info, falling back to physical cable_delay parameter
+        default_delay = getattr(self, 'params', {}).get('cable_delay', 0.0)
+        acq_delay = acq_info.get('acq_delay', default_delay)
+
+        t_effective_start = acq_start_sec + acq_delay
+        t_effective_end = t_effective_start + acq_duration
+
+        mask = (t_list >= t_effective_start - 1e-12) & (t_list <= t_effective_end + 1e-12)
+        indices = np.where(mask)[0]
+
+        sigma = getattr(self, 'params', {}).get('noise_sigma', 0.01)
+
+        if len(indices) == 0:
+            num_samples = max(100, int(round(acq_duration * 1e9)))
+            idx_closest = np.argmin(np.abs(t_list - acq_start_sec))
+            state = states[idx_closest]
+            exp_val = float(np.real(qutip.expect(self.a + self.ad, state)))
+            trace_data = exp_val + np.random.normal(0, sigma, size=num_samples)
+        else:
+            trace_data = np.array([
+                float(np.real(qutip.expect(self.a + self.ad, states[i]))) + np.random.normal(0, sigma)
+                for i in indices
+            ])
+
+        return trace_data
+
+    # =========================================================================
+    # Helpers & Compilation
+    # =========================================================================
     @staticmethod
     def _extract_amplitude(source: typing.Union[dict, pd.Series], default: typing.Any = 0.0) -> typing.Any:
         """Safely extract amplitude from a dict or pandas Series, handling None and NaN values.
@@ -119,7 +227,10 @@ class QbloxQutipSimulator:
         except Exception:
             device = QuantumDevice(name="dummy_device")
             try:
-                q0 = BasicTransmonElement("q0")
+                q0 = BasicTransmonElement("q0") #type: ignore
+                # Assign non-NaN default floats to the fallback dummy device
+                q0.clock_freqs.readout = 7.0e9
+                q0.clock_freqs.f01 = 5.0e9
                 device.add_element(q0)
             except Exception:
                 pass
@@ -218,9 +329,11 @@ class QbloxQutipSimulator:
         pulses['duration'] = durations
         pulses['wf_func'] = wfs
 
-        return self._simulate_processed(pulses, acquisitions, initial_state)
+        return self._simulate_processed(pulses, acquisitions, operations_dict=operations_dict, initial_state=initial_state)
 
-    def _simulate_processed(self, pulses, acquisitions, initial_state=None):
+    def _simulate_processed(self, pulses, acquisitions, operations_dict=None, initial_state=None):
+        operations_dict = operations_dict or {}
+
         # 1. Normalize pulse time units to seconds
         pulses_list = pulses.to_dict('records')
         for p in pulses_list:
@@ -310,25 +423,62 @@ class QbloxQutipSimulator:
         for _, acq in acquisitions.iterrows():
             acq_time = acq['abs_time']
             acq_time = acq_time * 1e-9 if acq_time > 1e-3 else acq_time
+            acq_duration = acq.get('duration', 1e-6)
+            acq_duration = acq_duration * 1e-9 if acq_duration > 1e-3 else acq_duration
+
+            op_hash = acq.get('operation_hash', None)
+            op = self._get_op_from_hash(op_hash, operations_dict) if op_hash else {}
+            data = getattr(op, 'data', op) if hasattr(op, 'data') else op
+            
+            acq_info_list = data.get('acquisition_info', []) if isinstance(data, dict) else []
+            if isinstance(acq_info_list, dict):
+                acq_info_list = [acq_info_list]
+            acq_info = acq_info_list[0] if (isinstance(acq_info_list, list) and len(acq_info_list) > 0) else {}
+
+            protocol = acq_info.get('protocol', acq.get('acq_protocol', acq.get('protocol', 'SSBIntegrationComplex')))
+            if protocol is None or (isinstance(protocol, float) and np.isnan(protocol)):
+                protocol = 'SSBIntegrationComplex'
+
             idx = np.argmin(np.abs(t_list - acq_time))
             state = result.states[idx]
-            
             rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
-            
-            prob_0 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q))
-            prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q))
-            prob_2 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q)) if self.N_q >= 3 else 0.0
-            
+
+            prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
+            prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+            prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q))) if self.N_q >= 3 else 0.0
+
+            if protocol in ('SSBIntegrationComplex', 'SSBIntegration', 'Integration'):
+                val, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
+                outcome = 1 if np.random.random() < prob_1 else 0
+            elif protocol in ('ThresholdedAcquisition', 'Thresholded'):
+                outcome = self._process_thresholded(rho_q, acq_info)
+                val = outcome
+                _, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
+            elif protocol in ('Trace', 'TraceAcquisition'):
+                val = self._process_trace(t_list, result.states, acq_time, acq_duration, acq_info)
+                I_val = float(np.mean(val)) if len(val) > 0 else 0.0
+                Q_val = 0.0
+                outcome = 1 if np.random.random() < prob_1 else 0
+            else:
+                val, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
+                outcome = 1 if np.random.random() < prob_1 else 0
+
+            acq_channel = acq_info.get('acq_channel', acq.get('acq_channel', acq.get('acq_index', 'acq')))
+
             measurements.append({
-                'name': acq.get('acq_index', acq.get('acq_channel', 'acq')),
-                'time': acq_time, 
+                'name': acq_channel,
+                'protocol': protocol,
+                'time': acq_time,
+                'duration': acq_duration,
                 'prob_0': prob_0,
                 'prob_1': prob_1,
                 'leakage_prob_2': prob_2,
-                'outcome': 1 if np.random.random() < prob_1 else 0
+                'outcome': outcome,
+                'I': I_val,
+                'Q': Q_val,
+                'value': val
             })
 
-        # 8. Wrap output in SimulationResult container
         result_container = SimulationResult(
             states=result.states if result is not None else [],
             t_list=t_list,
@@ -342,29 +492,6 @@ class QbloxQutipSimulator:
             'measurements': measurements
         }
 
-
-class SimulationResult:
-    """Clean container for stitched time-series simulation outputs."""
-    def __init__(
-        self, 
-        states: list, 
-        t_list: np.ndarray, 
-        measurements: list,
-        simulator: typing.Optional[typing.Any] = None
-    ):
-        self.states = states
-        self.t_list = t_list
-        self.measurements = measurements
-        # Explicit attribute declaration for type checkers
-        self._sim: typing.Optional[typing.Any] = simulator
-
-    def get_expectation(self, operator: str = 'sz') -> np.ndarray:
-        """Helper to extract expectation values without worrying about N_q dimensions."""
-        op = getattr(self._sim, operator, None) if self._sim else None
-        if op is None:
-            raise ValueError(f"Operator '{operator}' not found on simulator.")
-            
-        return np.array([qutip.expect(op, s).real for s in self.states])
 
 class QbloxLoopSimulator(QbloxQutipSimulator):
     """
@@ -420,13 +547,12 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
         pulses = timing_table[timing_table['is_acquisition'] == False].copy()
         acquisitions = timing_table[timing_table['is_acquisition'] == True].copy()
 
-        # 1. Unroll symbolic loop variables onto pulse dataframe
+        
         pulses = self._resolve_loop_pulses(pulses, uncompiled_ops, loops)
-
         # 2. Route to shot sweep or single execution
         if loops:
-            return self._simulate_shot_sweep(pulses, acquisitions, loops, initial_state)
-        return self._simulate_processed(pulses, acquisitions, initial_state)
+            return self._simulate_shot_sweep(pulses, acquisitions, loops, uncompiled_ops, initial_state)
+        return self._simulate_processed(pulses, acquisitions, uncompiled_ops, initial_state)
 
     def _resolve_loop_pulses(self, pulses: pd.DataFrame, uncompiled_ops: dict, loops: list) -> pd.DataFrame:
         """Resolve symbolic Variable parameters (amp, phase, duration) for every pulse row."""
@@ -481,9 +607,9 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
         pulses: pd.DataFrame, 
         acquisitions: pd.DataFrame, 
         loops: list, 
+        operations_dict: dict,
         initial_state: typing.Optional[qutip.Qobj]
     ) -> dict:
-        """Simulate each loop iteration as an independent experiment shot re-initialized from initial_state."""
         loop_start = loops[0]['t_start']
         loop_duration = loops[0]['iteration_duration']
         num_iterations = loops[0]['op'].data.get('control_flow_info', {}).get('repetitions', 1)
@@ -503,10 +629,9 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
             if len(it_acq) > 0:
                 it_acq['abs_time'] -= it_start
 
-            res = self._simulate_processed(it_pulses, it_acq, initial_state=initial_state)
+            res = self._simulate_processed(it_pulses, it_acq, operations_dict, initial_state=initial_state)
             all_results.append(res)
 
-            # Deduplicate boundary points: drop final point of all iterations except the last
             is_last = (it == num_iterations - 1)
             t_slice = res['t_list'] if is_last else res['t_list'][:-1]
             state_slice = res['result'].states if is_last else res['result'].states[:-1]
@@ -515,7 +640,12 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
             combined_states.extend(state_slice)
 
         final_t_list = np.concatenate(combined_t_list)
-        result_container = SimulationResult(combined_states, final_t_list, [m for r in all_results for m in r['measurements']], simulator=self)
+        result_container = SimulationResult(
+            combined_states, 
+            final_t_list, 
+            [m for r in all_results for m in r['measurements']], 
+            simulator=self
+        )
 
         return {
             'result': result_container,
@@ -525,15 +655,27 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
 
 from q1simulator import Cluster
 
-class QbloxQ1Simulator:
-    # ... (existing methods)
+import typing
+import numpy as np
+import qutip
+from qcodes.instrument import Instrument
+from q1simulator import Cluster
+from qblox_scheduler import Schedule
+
+class QbloxQ1Simulator(QbloxQutipSimulator):
     """
-    A simulator that takes a Q1Simulator object (https://github.com/sldesnoo-Delft/q1simulator/tree/main) and uses QuTiP to simulate 
-    the dynamics of a qubit coupled to a readout resonator.
+    A simulator that takes a Q1Simulator object (https://github.com/sldesnoo-Delft/q1simulator/tree/main) 
+    and uses QuTiP to simulate the dynamics of a qubit coupled to a readout resonator.
     """
 
-    def __init__(self, params: dict, name: str = 'cluster', modules: typing.Optional[dict] = None, hardware_config: typing.Optional[dict] = None):
-        self.cluster = Cluster(name=name, modules=modules)
+    def __init__(
+        self, 
+        params: dict, 
+        name: str = 'cluster', 
+        modules: typing.Optional[dict] = None, 
+        hardware_config: typing.Optional[dict] = None
+    ):
+        super().__init__(params)
 
         hardware_config = hardware_config or {}
         drive_config = hardware_config.get('drive', {})
@@ -544,60 +686,44 @@ class QbloxQ1Simulator:
         self.readout_mod = readout_config.get('module', 4)
         self.readout_seq = readout_config.get('sequencer', 0)
 
-        self.t_max = 0
-        self.t_min = 0
-        self.t_sample = 0
-        self.t_list = []
+        # 1. FIX: Default to drive and readout modules if none provided
+        if modules is None:
+            modules = {self.drive_mod: 'QCM-RF', self.readout_mod: 'QRM-RF'}
 
-        self.params = params
+        # 2. FIX: Safely replace existing instrument in QCoDeS registry if name collides
+        try:
+            if Instrument.exist(name):
+                Instrument.find_instrument(name).close()
+        except Exception:
+            pass
 
-        # System Frequencies & Coupling Parameters
-        self.f_q = params.get('f_q', 5.0e9)
-        self.f_d = params.get('f_d', self.f_q)
-        self.f_res = params.get('f_res', 6.0e9)
-        self.f_d_res = params.get('f_d_res', self.f_res)
-        self.chi = params.get('chi', 1.0e6)
-        
-        # Transmon Hilbert Space & Anharmonicity
-        self.N_q = params.get('N_q', 3)
-        self.alpha = params.get('alpha', -300.0e6)
-        
-        self.rabi_freq_per_volt = params.get('rabi_freq_per_volt', 10.0e6)
-        self.rabi_freq_res_per_volt = params.get('rabi_freq_res_per_volt', 10.0e6)
-        self.T1 = params.get('T1', np.inf)
-        self.T2 = params.get('T2', np.inf)
-        self.kappa = params.get('kappa', 1e6)
-        self.N_res = params.get('N_res', 5)
+        self.cluster: typing.Optional[Cluster] = Cluster(name=name, modules=modules)
 
-        # -------------------------------------------------------------
-        # Transmon & Readout Operators (Hilbert Space: N_q x N_res)
-        # -------------------------------------------------------------
-        self.b = qutip.tensor(qutip.destroy(self.N_q), qutip.identity(self.N_res))
-        self.bd = self.b.dag()
-        self.nq = self.bd * self.b #type: ignore
- 
-        self.a = qutip.tensor(qutip.identity(self.N_q), qutip.destroy(self.N_res))
-        self.ad = self.a.dag()
-        self.n = self.ad * self.a #type: ignore
+        self.t_max = 0.0
+        self.t_min = 0.0
+        self.t_sample = 0.0
+        self.t_list: np.ndarray = np.array([], dtype=float)
 
-        # -------------------------------------------------------------
-        # Backward-Compatible Pauli / Subspace Operators
-        # -------------------------------------------------------------
-        self.sm = self.b
-        
-        if self.N_q == 2:
-            self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
-            self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
-            self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
-        else:
-            self.sx = self.b + self.bd
-            self.sy = 1j * (self.bd - self.b)
-            
-            proj_0 = qutip.tensor(qutip.basis(self.N_q, 0) * qutip.basis(self.N_q, 0).dag(), qutip.identity(self.N_res)) #type: ignore
-            proj_1 = qutip.tensor(qutip.basis(self.N_q, 1) * qutip.basis(self.N_q, 1).dag(), qutip.identity(self.N_res)) #type: ignore
-            self.sz = proj_0 - proj_1
+    def close(self):
+        """Safely close the underlying QCoDeS cluster instrument."""
+        if hasattr(self, 'cluster') and self.cluster is not None:
+            try:
+                self.cluster.close()
+            except Exception:
+                pass
+            self.cluster = None
 
-    def simulate(self, initial_state: typing.Optional[qutip.Qobj] = None):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def simulate(
+        self, 
+        schedule: typing.Optional[Schedule] = None, 
+        initial_state: typing.Optional[qutip.Qobj] = None
+    ) -> dict:
         try:
             drive_pulses, readout_pulses = self.get_pulses()
         except Exception as e:
@@ -606,32 +732,27 @@ class QbloxQ1Simulator:
         
         if self.t_max == 0:
             print("Warning: t_max is 0, using default time range (500 ns)")
-            self.t_max = 500  # ns
-            self.t_sample = 1 # ns
+            self.t_max = 500
+            self.t_sample = 1
         
-        # 1. Time grid strictly in seconds
         num_points = int(round(self.t_max / self.t_sample)) if self.t_sample > 0 else 500
         self.t_list = np.linspace(0, self.t_max * 1e-9, num_points)
 
-        # 2. Correct initial ground state matching Hilbert space (N_q x N_res)
         if initial_state is None:
             initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
 
-        # 3. Frequencies & Detunings (in rad/s)
         omega_q = 2 * np.pi * self.rabi_freq_per_volt
         omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
         delta_q = 2 * np.pi * (self.f_q - self.f_d)
         delta_res = 2 * np.pi * (self.f_res - self.f_d_res)
 
-        # 4. Transmon + Cavity Hamiltonian
         h_static = (
             -delta_q * self.nq 
-            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b) #type: ignore
+            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b)  # type: ignore
             + delta_res * self.n 
             + 2 * np.pi * self.chi * self.n * self.nq
         )
 
-        # Helper to align pulse arrays safely with self.t_list length
         def safe_data(pulse_dict, key):
             arr = np.array(pulse_dict.get(key, {}).get("data", []))
             if len(arr) != len(self.t_list):
@@ -647,7 +768,6 @@ class QbloxQ1Simulator:
         readout_I = safe_data(readout_pulses, "I")
         readout_Q = safe_data(readout_pulses, "Q")
 
-        # 5. Full Time-Dependent Drive Hamiltonian
         h = [
             h_static,
             [(self.b + self.bd) * (omega_q / 2), drive_I],
@@ -656,7 +776,6 @@ class QbloxQ1Simulator:
             [1j * (self.ad - self.a) * (omega_res / 2), readout_Q]
         ]
 
-        # 6. Collapse Operators
         c_ops = []
         if self.T1 < np.inf: 
             c_ops.append(np.sqrt(1.0 / self.T1) * self.b)
@@ -669,7 +788,6 @@ class QbloxQ1Simulator:
         if self.kappa > 0: 
             c_ops.append(np.sqrt(self.kappa) * self.a)
 
-        # 7. Solver configuration
         options = {
             "nsteps": 100000,
             "max_step": 1e-9,
@@ -687,26 +805,24 @@ class QbloxQ1Simulator:
             print(f"✗ Solver failed: {e}")
         
         measurements = self.get_measurements(result)
-
-        # Pass mock acquisition data back to hardware module if present
-        try:
-            connected = self.cluster.get_connected_modules()
-            if self.readout_mod in connected:
-                qrm = connected[self.readout_mod]
-                if measurements and 'I' in measurements[0] and 'Q' in measurements[0]:
-                    I_arr = np.array([m['I'] for m in measurements])
-                    Q_arr = np.array([m['Q'] for m in measurements])
-                    qrm.sequencers[self.readout_seq].set_acquisition_mock_data(I_arr + 1j * Q_arr)
-        except Exception as e:
-            print(f"Warning: Could not set acquisition mock data: {e}")
+        self.set_acquisition_mock_data(measurements)
 
         return {'result': result, 't_list': self.t_list, 'measurements': measurements}
     
     def get_pulses(self):
         drive_pulses = {}
         readout_pulses = {}
-        qcm_outputs = self.cluster.get_connected_modules()[self.drive_mod].get_output()
-        qrm_outputs = self.cluster.get_connected_modules()[self.readout_mod].get_output()
+
+        # 3. FIX: Pylance guard
+        if self.cluster is None:
+            return drive_pulses, readout_pulses
+
+        connected = self.cluster.get_connected_modules()
+        if self.drive_mod not in connected or self.readout_mod not in connected:
+            return drive_pulses, readout_pulses
+
+        qcm_outputs = connected[self.drive_mod].get_output()
+        qrm_outputs = connected[self.readout_mod].get_output()
 
         for path in qcm_outputs.keys():
             if not self.t_max:
@@ -722,58 +838,115 @@ class QbloxQ1Simulator:
 
         return drive_pulses, readout_pulses
 
-    def get_measurements(self, result):
-        if result is None or not hasattr(result, 'states') or len(result.states) == 0:
+    def get_measurements(self, result: typing.Any) -> list:
+        if result is None or not hasattr(result, 'states') or len(getattr(result, 'states', [])) == 0:
+            return []
+
+        if self.cluster is None:
             return []
 
         try:
             connected = self.cluster.get_connected_modules()
             if self.readout_mod not in connected:
                 return []
-            acq_windows = connected[self.readout_mod].get_acquisition_windows()
+            
+            qrm = connected[self.readout_mod]
+            acq_windows = qrm.get_acquisition_windows()
+
+            # Fallback: if acq_windows is empty, check for manually attached test windows on the sequencer
+            if not acq_windows or not any(acq_windows.values()):
+                if hasattr(qrm, 'sequencers') and len(qrm.sequencers) > self.readout_seq:
+                    seq_obj = qrm.sequencers[self.readout_seq]
+                    if hasattr(seq_obj, 'acq_windows'):
+                        acq_windows = {self.readout_seq: getattr(seq_obj, 'acq_windows')}
+
         except Exception as e:
             print(f"Warning: Could not get acquisition windows: {e}")
             return []
 
-        seq_key = f'sequencer{self.readout_seq}'
-        if seq_key not in acq_windows:
+        # Access windows flexibly by readout sequencer index
+        windows = (
+            acq_windows.get(self.readout_seq)
+            or acq_windows.get(str(self.readout_seq))
+            or acq_windows.get(f"sequencer{self.readout_seq}")
+            or acq_windows.get(f"seq{self.readout_seq}")
+        )
+
+        if not windows:
             return []
 
-        sigma = 0.02  # Voltage noise standard deviation (V)
-        v_0 = complex(0.05, 0.05)   # Ground state |0> IQ centroid (V)
-        v_1 = complex(-0.05, -0.05) # Excited state |1> IQ centroid (V)
+        sigma = 0.02
+        v_0 = complex(0.05, 0.05)
+        v_1 = complex(-0.05, -0.05)
 
         measurements = []
-        for acq in acq_windows[seq_key]:
+        for acq in windows:
             try:
-                # Convert acquisition start time from ns to seconds
-                acq_start_sec = acq[0][0] * 1e-9
+                # Handle [(start, dur)], [start, dur], or (start, dur)
+                if isinstance(acq, (list, tuple)) and len(acq) > 0 and isinstance(acq[0], (list, tuple)):
+                    acq_start_ns, duration_ns = acq[0][0], acq[0][1]
+                elif isinstance(acq, (list, tuple)) and len(acq) >= 2:
+                    acq_start_ns, duration_ns = acq[0], acq[1]
+                else:
+                    continue
+
+                acq_start_sec = float(acq_start_ns) * 1e-9
+                acq_duration_sec = float(duration_ns) * 1e-9
+
+                # 1. Generate physical 1D time-series trace using QuTiP states
+                trace_data = self._process_trace(
+                    t_list=self.t_list,
+                    states=result.states,
+                    acq_start_sec=acq_start_sec,
+                    acq_duration=acq_duration_sec,
+                    acq_info={'acq_delay': getattr(self, 'params', {}).get('cable_delay', 120e-9)}
+                )
+
+                # 2. Compute scalar I/Q centroids and probabilities
                 idx = np.argmin(np.abs(self.t_list - acq_start_sec))
                 state = result.states[idx]
 
-                # Qubit reduced density matrix
                 rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
                 
-                prob_0 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q))
-                prob_1 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q))
-                prob_2 = np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q)) if self.N_q >= 3 else 0.0
+                prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
+                prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+                prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q))) if self.N_q >= 3 else 0.0
 
-                # Compute state-dependent voltage centroid with additive Gaussian noise
                 centroid = prob_0 * v_0 + prob_1 * v_1
                 I_val = float(np.real(centroid) + np.random.normal(0, sigma))
                 Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
 
                 measurements.append({
                     'time': acq_start_sec,
+                    'duration': acq_duration_sec,
                     'prob_0': prob_0,
                     'prob_1': prob_1,
                     'leakage_prob_2': prob_2,
                     'outcome': 1 if np.random.random() < prob_1 else 0,
                     'I': I_val,
-                    'Q': Q_val
+                    'Q': Q_val,
+                    'trace': trace_data,
+                    'trace_I': np.real(trace_data),
+                    'trace_Q': np.imag(trace_data)
                 })
             except Exception as e:
                 print(f"Warning: Could not process acquisition window: {e}")
                 continue
 
         return measurements
+
+    def set_acquisition_mock_data(self, measurements: list):
+        """Pass mock acquisition data back to hardware module if present."""
+        if self.cluster is None or not measurements:
+            return
+
+        try:
+            connected = self.cluster.get_connected_modules()
+            if self.readout_mod in connected:
+                qrm = connected[self.readout_mod]
+                if 'I' in measurements[0] and 'Q' in measurements[0]:
+                    I_arr = np.array([m['I'] for m in measurements])
+                    Q_arr = np.array([m['Q'] for m in measurements])
+                    qrm.sequencers[self.readout_seq].set_acquisition_mock_data(I_arr + 1j * Q_arr)
+        except Exception as e:
+            print(f"Warning: Could not set acquisition mock data: {e}")    

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qblox-sim"
+version = "0.1.0"
+description = "Simulation utilities for Qblox Scheduler using QuTiP"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "qblox-instruments==1.1.1",
+    "qblox-scheduler==1.0.0b3",
+    "q1simulator",
+    "qutip>=4.7.0",
+    "numpy>=1.22.0, <2.0.0",
+    "scipy",
+    "pandas",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "jupyter",
+    "ipykernel",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
