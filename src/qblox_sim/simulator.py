@@ -5,6 +5,7 @@ import qutip
 from qblox_scheduler import Schedule, SerialCompiler, QuantumDevice, BasicTransmonElement
 from qblox_scheduler.operations import SquarePulse, GaussPulse, DRAGPulse, LoopOperation
 from qblox_sim.config import SimulationConfig
+from qblox_sim.physics import QuantumSystem
 import typing
 
 class SimulationResult:
@@ -64,41 +65,19 @@ class QbloxQutipSimulator:
         self.kappa = self.cfg.resonator.kappa
         self.N_res = self.cfg.resonator.N_res
 
-        # -------------------------------------------------------------
-        # Transmon & Readout Operators (Hilbert Space: N_q x N_res)
-        # -------------------------------------------------------------
+        self.system = QuantumSystem(self.cfg)
         
-        # Transmon ladder / lowering operator
-        self.b = qutip.tensor(qutip.destroy(self.N_q), qutip.identity(self.N_res))
-        self.bd = self.b.dag()
-        # Qubit number operator (b^\dagger b)
-        self.nq = self.bd * self.b  #type: ignore
-
-        # Readout Cavity operators
-        self.a = qutip.tensor(qutip.identity(self.N_q), qutip.destroy(self.N_res))
-        self.ad = self.a.dag()
-        self.n = self.ad * self.a #type: ignore
-
-        # -------------------------------------------------------------
-        # Backward-Compatible Pauli / Subspace Operators
-        # -------------------------------------------------------------
-        # Lowering operator (takes |1> -> |0> and |2> -> |1>)
-        self.sm = self.b
-        
-        if self.N_q == 2:
-            # Exact 2-level Pauli matrices
-            self.sx = qutip.tensor(qutip.sigmax(), qutip.identity(self.N_res))
-            self.sy = qutip.tensor(qutip.sigmay(), qutip.identity(self.N_res))
-            self.sz = qutip.tensor(qutip.sigmaz(), qutip.identity(self.N_res))
-        else:
-            # Generalized drive quadratures for N_q >= 3
-            self.sx = self.b + self.bd
-            self.sy = 1j * (self.bd - self.b)
-            
-            # Generalized sz projecting onto {|0>, |1>} computational subspace
-            proj_0 = qutip.tensor(qutip.basis(self.N_q, 0) * qutip.basis(self.N_q, 0).dag(), qutip.identity(self.N_res)) #type: ignore
-            proj_1 = qutip.tensor(qutip.basis(self.N_q, 1) * qutip.basis(self.N_q, 1).dag(), qutip.identity(self.N_res)) #type: ignore
-            self.sz = proj_0 - proj_1
+        # STRANGLER FIX: Map operators so external users (like `get_expectation`) don't break
+        self.b = self.system.b
+        self.bd = self.system.bd
+        self.nq = self.system.nq
+        self.a = self.system.a
+        self.ad = self.system.ad
+        self.n = self.system.n
+        self.sm = self.system.sm
+        self.sx = self.system.sx
+        self.sy = self.system.sy
+        self.sz = self.system.sz
 
     # =================================----------------========================
     # Acquisition Protocol Handlers
@@ -438,40 +417,21 @@ class QbloxQutipSimulator:
         res_drive_i = np.real(res_drive)
         res_drive_q = np.imag(res_drive)
 
-        omega_q = 2 * np.pi * self.rabi_freq_per_volt
-        omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
+        # (Replace everything from omega_q = ... down to the end of c_ops = [...])
+        omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
+        omega_res = 2 * np.pi * self.cfg.resonator.rabi_freq_res_per_volt
         
-        delta_q = 2 * np.pi * (self.f_q - self.f_d)
-        delta_res = 2 * np.pi * (self.f_res - self.f_d_res)
-        
-        # --- TRANSMON HAMILTONIAN WITH ANHARMONICITY ---
-        h_static = (
-            -delta_q * self.nq 
-            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b) #type: ignore
-            + delta_res * self.n 
-            + 2 * np.pi * self.chi * self.n * self.nq
-        )
+        h_static = self.system.build_static_hamiltonian()
+        c_ops = self.system.build_collapse_operators()
 
         h = [
             h_static,
-            [(self.b + self.bd) * (omega_q / 2), qubit_drive_i],
-            [1j * (self.bd - self.b) * (omega_q / 2), qubit_drive_q],
-            [(self.a + self.ad) * (omega_res / 2), res_drive_i],
-            [1j * (self.ad - self.a) * (omega_res / 2), res_drive_q]
+            [(self.system.b + self.system.bd) * (omega_q / 2), qubit_drive_i],
+            [1j * (self.system.bd - self.system.b) * (omega_q / 2), qubit_drive_q],
+            [(self.system.a + self.system.ad) * (omega_res / 2), res_drive_i],
+            [1j * (self.system.ad - self.system.a) * (omega_res / 2), res_drive_q]
         ]
         
-        c_ops = []
-        if self.T1 < np.inf: 
-            c_ops.append(np.sqrt(1.0 / self.T1) * self.b)
-            
-        if self.T2 < np.inf:
-            gamma_phi = (1.0 / self.T2) - (0.5 / self.T1 if self.T1 < np.inf else 0)
-            if gamma_phi > 0: 
-                c_ops.append(np.sqrt(2 * gamma_phi) * self.nq)
-                
-        if self.kappa > 0: 
-            c_ops.append(np.sqrt(self.kappa) * self.a)
-
         # 6. Execute solver
         options = {"nsteps": 500000}
         result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, options=options)
@@ -796,20 +756,17 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
         num_points = int(round(self.t_max / self.t_sample)) if self.t_sample > 0 else 500
         self.t_list = np.linspace(0, self.t_max * 1e-9, num_points)
 
+        # STRANGLER FIX: Use config dimensions
         if initial_state is None:
-            initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
+            initial_state = qutip.tensor(qutip.basis(self.cfg.qubit.N_q, 0), qutip.basis(self.cfg.resonator.N_res, 0))
 
-        omega_q = 2 * np.pi * self.rabi_freq_per_volt
-        omega_res = 2 * np.pi * self.rabi_freq_res_per_volt
-        delta_q = 2 * np.pi * (self.f_q - self.f_d)
-        delta_res = 2 * np.pi * (self.f_res - self.f_d_res)
+        # --- PHASE 2 PHYSICS REPLACEMENT ---
+        omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
+        omega_res = 2 * np.pi * self.cfg.resonator.rabi_freq_res_per_volt
 
-        h_static = (
-            -delta_q * self.nq 
-            + np.pi * self.alpha * (self.bd * self.bd * self.b * self.b)  # type: ignore
-            + delta_res * self.n 
-            + 2 * np.pi * self.chi * self.n * self.nq
-        )
+        h_static = self.system.build_static_hamiltonian()
+        c_ops = self.system.build_collapse_operators()
+        # -----------------------------------
 
         def safe_data(pulse_dict, key):
             arr = np.array(pulse_dict.get(key, {}).get("data", []))
@@ -828,23 +785,11 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
 
         h = [
             h_static,
-            [(self.b + self.bd) * (omega_q / 2), drive_I],
-            [1j * (self.bd - self.b) * (omega_q / 2), drive_Q],
-            [(self.a + self.ad) * (omega_res / 2), readout_I],
-            [1j * (self.ad - self.a) * (omega_res / 2), readout_Q]
+            [(self.system.b + self.system.bd) * (omega_q / 2), drive_I],
+            [1j * (self.system.bd - self.system.b) * (omega_q / 2), drive_Q],
+            [(self.system.a + self.system.ad) * (omega_res / 2), readout_I],
+            [1j * (self.system.ad - self.system.a) * (omega_res / 2), readout_Q]
         ]
-
-        c_ops = []
-        if self.T1 < np.inf: 
-            c_ops.append(np.sqrt(1.0 / self.T1) * self.b)
-            
-        if self.T2 < np.inf:
-            gamma_phi = (1.0 / self.T2) - (0.5 / self.T1 if self.T1 < np.inf else 0)
-            if gamma_phi > 0: 
-                c_ops.append(np.sqrt(2 * gamma_phi) * self.nq)
-                
-        if self.kappa > 0: 
-            c_ops.append(np.sqrt(self.kappa) * self.a)
 
         options = {
             "nsteps": 100000,
