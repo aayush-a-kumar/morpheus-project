@@ -6,6 +6,7 @@ from qblox_scheduler import Schedule, SerialCompiler, QuantumDevice, BasicTransm
 from qblox_scheduler.operations import SquarePulse, GaussPulse, DRAGPulse, LoopOperation
 from qblox_sim.config import SimulationConfig
 from qblox_sim.physics import QuantumSystem
+from qblox_sim.signals import ScheduleSignalProvider, extract_amplitude
 import typing
 
 class SimulationResult:
@@ -165,24 +166,25 @@ class QbloxQutipSimulator:
     # =========================================================================
     # Helpers & Compilation
     # =========================================================================
-    @staticmethod
-    def _extract_amplitude(source: typing.Union[dict, pd.Series], default: typing.Any = 0.0) -> typing.Any:
-        """Safely extract amplitude from a dict or pandas Series, handling None and NaN values.
-        Preserves Variable objects for symbolic/loop resolution.
-        """
-        # Type narrowing: only call .to_dict() if source is a pd.Series
-        d = source.to_dict() if isinstance(source, pd.Series) else source
+    #NOTE: deprecated for signals.py
+    # @staticmethod
+    # def _extract_amplitude(source: typing.Union[dict, pd.Series], default: typing.Any = 0.0) -> typing.Any:
+    #     """Safely extract amplitude from a dict or pandas Series, handling None and NaN values.
+    #     Preserves Variable objects for symbolic/loop resolution.
+    #     """
+    #     # Type narrowing: only call .to_dict() if source is a pd.Series
+    #     d = source.to_dict() if isinstance(source, pd.Series) else source
         
-        if isinstance(d, dict):
-            for key in ('amplitude', 'amp'):
-                val = d.get(key)
-                if val is not None:
-                    try:
-                        if not pd.isna(val):
-                            return val
-                    except Exception:
-                        return val
-        return default
+    #     if isinstance(d, dict):
+    #         for key in ('amplitude', 'amp'):
+    #             val = d.get(key)
+    #             if val is not None:
+    #                 try:
+    #                     if not pd.isna(val):
+    #                         return val
+    #                 except Exception:
+    #                     return val
+    #     return default
 
     def _flatten_operations(self, operations_dict: dict, all_ops: typing.Optional[dict] = None) -> dict:
         """Recursively flatten nested schedule operations dictionary."""
@@ -225,72 +227,73 @@ class QbloxQutipSimulator:
             return compiled_sched.timing_table.data, compiled_sched.operations # type: ignore[attr-defined]
 
     #NOTE: Deprecated!!
-    def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
-        t_start = pulse_info['abs_time'] 
-        duration = pulse_info['duration']
-        t_rel = t - t_start
+    # def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
+    #     t_start = pulse_info['abs_time'] 
+    #     duration = pulse_info['duration']
+    #     t_rel = t - t_start
         
-        if t_rel < 0 or t_rel > duration:
-            return 0.0j
+    #     if t_rel < 0 or t_rel > duration:
+    #         return 0.0j
         
-        amp = self._extract_amplitude(pulse_info)
-        phase_deg = pulse_info.get('phase', 0.0)
-        phase_rad = np.deg2rad(phase_deg)
+    #     amp = self._extract_amplitude(pulse_info)
+    #     phase_deg = pulse_info.get('phase', 0.0)
+    #     phase_rad = np.deg2rad(phase_deg)
 
-        #janky waveform function handling 
-        wf_raw = pulse_info.get('wf_func')
-        wf_func = str(wf_raw).lower() if wf_raw else 'square'
+    #     #janky waveform function handling 
+    #     wf_raw = pulse_info.get('wf_func')
+    #     wf_func = str(wf_raw).lower() if wf_raw else 'square'
         
-        if 'gauss' in wf_func:
-            sigma = pulse_info.get('sigma', duration / 4)
-            if sigma is None: sigma = duration / 4
-            if sigma == 0: sigma = 1e-12
-            t_mid = duration / 2
-            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
-        elif 'drag' in wf_func:
-            sigma = pulse_info.get('sigma', duration / 4)
-            if sigma is None: sigma = duration / 4
-            if sigma == 0: sigma = 1e-12
-            beta = pulse_info.get('beta', 0.0)
-            t_mid = duration / 2
-            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
-            envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
-            return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
-        else:
-            # Default to square pulse for any unspecified or square waveform
-            envelope = amp
+    #     if 'gauss' in wf_func:
+    #         sigma = pulse_info.get('sigma', duration / 4)
+    #         if sigma is None: sigma = duration / 4
+    #         if sigma == 0: sigma = 1e-12
+    #         t_mid = duration / 2
+    #         envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+    #     elif 'drag' in wf_func:
+    #         sigma = pulse_info.get('sigma', duration / 4)
+    #         if sigma is None: sigma = duration / 4
+    #         if sigma == 0: sigma = 1e-12
+    #         beta = pulse_info.get('beta', 0.0)
+    #         t_mid = duration / 2
+    #         envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+    #         envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
+    #         return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
+    #     else:
+    #         # Default to square pulse for any unspecified or square waveform
+    #         envelope = amp
         
-        return envelope * np.exp(1j * phase_rad)
+    #     return envelope * np.exp(1j * phase_rad)
 
-    def _pulse_envelope_vectorized(self, t_rel: np.ndarray, pulse_info: dict) -> np.ndarray:
-        """Vectorized evaluation of the pulse envelope over an array of relative times."""
-        duration = pulse_info['duration']
-        amp = self._extract_amplitude(pulse_info)
-        phase_rad = np.deg2rad(pulse_info.get('phase', 0.0))
+    #NOTE: also deprecated, replaced by vectorized version in signals.py!!
+    # def _pulse_envelope_vectorized(self, t_rel: np.ndarray, pulse_info: dict) -> np.ndarray:
+    #     """Vectorized evaluation of the pulse envelope over an array of relative times."""
+    #     duration = pulse_info['duration']
+    #     amp = self._extract_amplitude(pulse_info)
+    #     phase_rad = np.deg2rad(pulse_info.get('phase', 0.0))
 
-        wf_raw = pulse_info.get('wf_func')
-        wf_func = str(wf_raw).lower() if wf_raw else 'square'
+    #     wf_raw = pulse_info.get('wf_func')
+    #     wf_func = str(wf_raw).lower() if wf_raw else 'square'
         
-        if 'gauss' in wf_func:
-            sigma = pulse_info.get('sigma', duration / 4)
-            if sigma is None or sigma == 0: 
-                sigma = 1e-12
-            t_mid = duration / 2
-            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
-        elif 'drag' in wf_func:
-            sigma = pulse_info.get('sigma', duration / 4)
-            if sigma is None or sigma == 0: 
-                sigma = 1e-12
-            beta = pulse_info.get('beta', 0.0)
-            t_mid = duration / 2
-            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
-            envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
-            return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
-        else:
-            # Broadcast the scalar amplitude across the entire time array
-            envelope = np.full_like(t_rel, amp, dtype=complex)
+    #     if 'gauss' in wf_func:
+    #         sigma = pulse_info.get('sigma', duration / 4)
+    #         if sigma is None or sigma == 0: 
+    #             sigma = 1e-12
+    #         t_mid = duration / 2
+    #         envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+    #     elif 'drag' in wf_func:
+    #         sigma = pulse_info.get('sigma', duration / 4)
+    #         if sigma is None or sigma == 0: 
+    #             sigma = 1e-12
+    #         beta = pulse_info.get('beta', 0.0)
+    #         t_mid = duration / 2
+    #         envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+    #         envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
+    #         return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
+    #     else:
+    #         # Broadcast the scalar amplitude across the entire time array
+    #         envelope = np.full_like(t_rel, amp, dtype=complex)
         
-        return envelope * np.exp(1j * phase_rad)
+    #     return envelope * np.exp(1j * phase_rad)
 
     def simulate(self, schedule: Schedule, initial_state: typing.Optional[qutip.Qobj] = None):
         timing_table, raw_operations_dict = self._get_compiled_schedule(schedule)
@@ -310,7 +313,7 @@ class QbloxQutipSimulator:
             # Handle both quantify-style and older/newer qblox-style
             data = getattr(op, 'data', op) if hasattr(op, 'data') else op
             
-            a = self._extract_amplitude(row)
+            a = extract_amplitude(row)
             p = 0.0
             dur = row['duration']
             wf = 'square'
@@ -330,7 +333,7 @@ class QbloxQutipSimulator:
                 p_info = p_info_list[0] 
                 if isinstance(p_info, dict):
                     if a == 0:
-                        a = self._extract_amplitude(p_info)
+                        a = extract_amplitude(p_info)
                     p = p_info.get('phase', 0.0)
                     dur = p_info.get('duration', dur)
                     wf = p_info.get('wf_func', 'square')
@@ -368,7 +371,7 @@ class QbloxQutipSimulator:
             acq_max = acq_max * 1e-9 if acq_max > 1e-3 else acq_max
             total_duration = max(total_duration, acq_max)
 
-# 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
+        # 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
         # Check params for a custom dt, otherwise default to 1 ns for better performance
         step_size = self.cfg.dt 
         num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
@@ -383,39 +386,15 @@ class QbloxQutipSimulator:
         res_drive = np.zeros_like(t_list, dtype=complex)
         t_start_grid = t_list[0]
 
-        for p in pulses_list:
-            port = p.get('port')
-            t_start = p['abs_time']
-            duration = p['duration']
-            t_end = t_start + duration
-            
-            # Calculate array index slice matching this pulse window
-            idx_start = max(0, int(np.floor((t_start - t_start_grid) / dt_actual)))
-            idx_end = min(len(t_list), int(np.ceil((t_end - t_start_grid) / dt_actual)) + 1)
-            
-            if idx_start >= len(t_list) or idx_end <= 0:
-                continue
-                
-            # Get the actual time values for this slice and create a precise mask
-            t_slice = t_list[idx_start:idx_end]
-            t_rel = t_slice - t_start
-            mask = (t_rel >= 0) & (t_rel <= duration)
-            
-            if not np.any(mask):
-                continue
-                
-            t_rel_valid = t_rel[mask]
-            signal = self._pulse_envelope_vectorized(t_rel_valid, p)
-            
-            if port == 'q0:mw':
-                q_drive[idx_start:idx_end][mask] += signal
-            elif port == 'q0:res':
-                res_drive[idx_start:idx_end][mask] += signal
+        # --- PHASE 3 SIGNAL REPLACEMENT ---
+        signal_provider = ScheduleSignalProvider(pulses_list)
+        drives = signal_provider.get_drives(t_list)
 
-        qubit_drive_i = np.real(q_drive)
-        qubit_drive_q = np.imag(q_drive)
-        res_drive_i = np.real(res_drive)
-        res_drive_q = np.imag(res_drive)
+        qubit_drive_i = np.real(drives["q_drive"])
+        qubit_drive_q = np.imag(drives["q_drive"])
+        res_drive_i = np.real(drives["res_drive"])
+        res_drive_q = np.imag(drives["res_drive"])
+        # ----------------------------------
 
         # (Replace everything from omega_q = ... down to the end of c_ops = [...])
         omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
@@ -602,7 +581,7 @@ class QbloxLoopSimulator(QbloxQutipSimulator):
                 
             if p_info_list:
                 p_info = p_info_list[0]
-                raw_amp = self._extract_amplitude(p_info)
+                raw_amp = extract_amplitude(p_info)
                 a = self._resolve_value(raw_amp, mapping)
                 p = self._resolve_value(p_info.get('phase', 0.0), mapping)
                 dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
