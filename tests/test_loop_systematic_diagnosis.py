@@ -8,6 +8,7 @@ from qblox_scheduler.operations.expressions import DType
 from qblox_scheduler.operations import SquarePulse
 from qblox_scheduler.resources import ClockResource
 from qblox_sim.simulator import QbloxLoopSimulator
+from qblox_sim.signals import ScheduleSignalProvider
 
 
 def test_systematic_loop_diagnosis(default_qubit_params):
@@ -69,7 +70,8 @@ def test_systematic_loop_diagnosis(default_qubit_params):
         p_info = pulse_records[idx * 2].copy()
         p_info['abs_time'] = pulse_start
         
-        sampled_envs = [sim._pulse_envelope(t, p_info) for t in sampled_times]
+        provider = ScheduleSignalProvider([p_info])
+        sampled_envs = provider.get_drives(sampled_times)["q_drive"]
         
         if len(sampled_envs) > 0:
             max_env = np.max(np.abs(sampled_envs))

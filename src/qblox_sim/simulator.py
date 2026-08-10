@@ -8,6 +8,7 @@ from qblox_sim.config import SimulationConfig
 from qblox_sim.physics import QuantumSystem
 from qblox_sim.signals import ScheduleSignalProvider, extract_amplitude
 from qblox_sim.acquisitions import AcquisitionRegistry
+from qblox_sim.engine import QuTiPEngine
 import typing
 
 class SimulationResult:
@@ -44,6 +45,7 @@ class QbloxQutipSimulator:
     def __init__(self, params: dict, configs: typing.Optional[dict] = None):
         self.params = params  # Keeping original reference for safety during refactor
         self.configs = configs
+        self.engine = QuTiPEngine()
         
         # --- PHASE 1: Wire in Configuration Layer ---
         self.cfg = SimulationConfig.from_dict(params)
@@ -400,29 +402,38 @@ class QbloxQutipSimulator:
         signal_provider = ScheduleSignalProvider(pulses_list)
         drives = signal_provider.get_drives(t_list)
 
-        qubit_drive_i = np.real(drives["q_drive"])
-        qubit_drive_q = np.imag(drives["q_drive"])
-        res_drive_i = np.real(drives["res_drive"])
-        res_drive_q = np.imag(drives["res_drive"])
+        # --- PHASE 5: Execute Engine ---
+        result = self.engine.run(
+            system=self.system,
+            drives=drives,
+            t_list=t_list,
+            initial_state=initial_state
+        )
 
-        # PHASE 2: Physics setup
-        omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
-        omega_res = 2 * np.pi * self.cfg.resonator.rabi_freq_res_per_volt
-        
-        h_static = self.system.build_static_hamiltonian()
-        c_ops = self.system.build_collapse_operators()
+        #NOTE: Deprecated: The following physics setup and solver execution is now handled in the QuTiPEngine class.
+        # qubit_drive_i = np.real(drives["q_drive"])
+        # qubit_drive_q = np.imag(drives["q_drive"])
+        # res_drive_i = np.real(drives["res_drive"])
+        # res_drive_q = np.imag(drives["res_drive"])
 
-        h = [
-            h_static,
-            [(self.system.b + self.system.bd) * (omega_q / 2), qubit_drive_i],
-            [1j * (self.system.bd - self.system.b) * (omega_q / 2), qubit_drive_q],
-            [(self.system.a + self.system.ad) * (omega_res / 2), res_drive_i],
-            [1j * (self.system.ad - self.system.a) * (omega_res / 2), res_drive_q]
-        ]
+        # # PHASE 2: Physics setup
+        # omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
+        # omega_res = 2 * np.pi * self.cfg.resonator.rabi_freq_res_per_volt
         
-        # 6. Execute solver
-        options = {"nsteps": 500000}
-        result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, options=options)
+        # h_static = self.system.build_static_hamiltonian()
+        # c_ops = self.system.build_collapse_operators()
+
+        # h = [
+        #     h_static,
+        #     [(self.system.b + self.system.bd) * (omega_q / 2), qubit_drive_i],
+        #     [1j * (self.system.bd - self.system.b) * (omega_q / 2), qubit_drive_q],
+        #     [(self.system.a + self.system.ad) * (omega_res / 2), res_drive_i],
+        #     [1j * (self.system.ad - self.system.a) * (omega_res / 2), res_drive_q]
+        # ]
+        
+        # # 6. Execute solver
+        # options = {"nsteps": 500000}
+        # result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, options=options)
 
         # 7. Measurement extraction (Phase 4)
         measurements = []
