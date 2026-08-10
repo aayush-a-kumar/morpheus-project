@@ -27,9 +27,9 @@ def test_systematic_loop_diagnosis(default_qubit_params):
     orig_simulate_processed = sim._simulate_processed
 
     # Spy captures raw pulse dataframes per shot
-    def spy_simulate_processed(pulses, acquisitions, initial_state=None):
+    def spy_simulate_processed(pulses, acquisitions, operations_dict=None, initial_state=None):
         captured_data['pulses_list'].append(pulses.copy())
-        return orig_simulate_processed(pulses, acquisitions, initial_state)
+        return orig_simulate_processed(pulses, acquisitions, operations_dict, initial_state)
 
     sim._simulate_processed = spy_simulate_processed  # type: ignore[method-assign]
 

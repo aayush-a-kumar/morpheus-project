@@ -25,7 +25,7 @@ def test_diagnose_stage4_granular(default_qubit_params):
     
     orig_simulate_processed = sim._simulate_processed
 
-    def spy_simulate_processed(pulses, acquisitions, initial_state=None):
+    def spy_simulate_processed(pulses, acquisitions, operations_dict=None, initial_state=None):
         pulses_list = pulses.to_dict('records')
         print(f"\n=== [SIMULATE PROCESSED INSPECTION] ===")
         print(f"Total pulse records passed: {len(pulses_list)}")
@@ -50,7 +50,7 @@ def test_diagnose_stage4_granular(default_qubit_params):
             return v
 
         sim._pulse_envelope = spy_env  # type: ignore[method-assign]
-        return orig_simulate_processed(pulses, acquisitions, initial_state)
+        return orig_simulate_processed(pulses, acquisitions, operations_dict, initial_state)
 
     sim._simulate_processed = spy_simulate_processed  # type: ignore[method-assign]
 

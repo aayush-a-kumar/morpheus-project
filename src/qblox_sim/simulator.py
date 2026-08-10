@@ -238,6 +238,7 @@ class QbloxQutipSimulator:
             compiled_sched = compiler.compile(schedule)
             return compiled_sched.timing_table.data, compiled_sched.operations # type: ignore[attr-defined]
 
+    #NOTE: Deprecated!!
     def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
         t_start = pulse_info['abs_time'] 
         duration = pulse_info['duration']
@@ -272,6 +273,36 @@ class QbloxQutipSimulator:
         else:
             # Default to square pulse for any unspecified or square waveform
             envelope = amp
+        
+        return envelope * np.exp(1j * phase_rad)
+
+    def _pulse_envelope_vectorized(self, t_rel: np.ndarray, pulse_info: dict) -> np.ndarray:
+        """Vectorized evaluation of the pulse envelope over an array of relative times."""
+        duration = pulse_info['duration']
+        amp = self._extract_amplitude(pulse_info)
+        phase_rad = np.deg2rad(pulse_info.get('phase', 0.0))
+
+        wf_raw = pulse_info.get('wf_func')
+        wf_func = str(wf_raw).lower() if wf_raw else 'square'
+        
+        if 'gauss' in wf_func:
+            sigma = pulse_info.get('sigma', duration / 4)
+            if sigma is None or sigma == 0: 
+                sigma = 1e-12
+            t_mid = duration / 2
+            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+        elif 'drag' in wf_func:
+            sigma = pulse_info.get('sigma', duration / 4)
+            if sigma is None or sigma == 0: 
+                sigma = 1e-12
+            beta = pulse_info.get('beta', 0.0)
+            t_mid = duration / 2
+            envelope = amp * np.exp(-(t_rel - t_mid)**2 / (2 * sigma**2))
+            envelope_dot = -(t_rel - t_mid) / (sigma**2) * envelope
+            return (envelope + 1j * (-beta * envelope_dot / (2 * np.pi))) * np.exp(1j * phase_rad)
+        else:
+            # Broadcast the scalar amplitude across the entire time array
+            envelope = np.full_like(t_rel, amp, dtype=complex)
         
         return envelope * np.exp(1j * phase_rad)
 
@@ -351,29 +382,49 @@ class QbloxQutipSimulator:
             acq_max = acq_max * 1e-9 if acq_max > 1e-3 else acq_max
             total_duration = max(total_duration, acq_max)
 
-        # 3. Create a STRICTLY UNIFORM time grid (0.1 ns resolution)
-        step_size = 0.1e-9  # 0.1 ns step
+# 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
+        # Check params for a custom dt, otherwise default to 1 ns for better performance
+        step_size = self.params.get('dt', 1.0e-9) 
         num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
         t_list = np.linspace(0, total_duration, num_points)
+        dt_actual = t_list[1] - t_list[0] if len(t_list) > 1 else step_size
 
         if initial_state is None:
             initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
             
-        # 4. Helper to evaluate drive envelope at time t
-        def get_drive(t, port_name, pulses_list):
-            val = 0.0j
-            eps = 1e-13
-            for p in pulses_list:
-                if p['port'] == port_name:
-                    t_start = p['abs_time']
-                    duration = p['duration']
-                    if t_start - eps <= t <= t_start + duration + eps:
-                        val += self._pulse_envelope(t, p)
-            return val
-        
-        # 5. Pre-sample drive signals into 1D NumPy arrays matching t_list exactly
-        q_drive = np.array([get_drive(t, 'q0:mw', pulses_list) for t in t_list])
-        res_drive = np.array([get_drive(t, 'q0:res', pulses_list) for t in t_list])
+        # 4 & 5. Pre-sample drive signals into 1D NumPy arrays using vectorized slicing
+        q_drive = np.zeros_like(t_list, dtype=complex)
+        res_drive = np.zeros_like(t_list, dtype=complex)
+        t_start_grid = t_list[0]
+
+        for p in pulses_list:
+            port = p.get('port')
+            t_start = p['abs_time']
+            duration = p['duration']
+            t_end = t_start + duration
+            
+            # Calculate array index slice matching this pulse window
+            idx_start = max(0, int(np.floor((t_start - t_start_grid) / dt_actual)))
+            idx_end = min(len(t_list), int(np.ceil((t_end - t_start_grid) / dt_actual)) + 1)
+            
+            if idx_start >= len(t_list) or idx_end <= 0:
+                continue
+                
+            # Get the actual time values for this slice and create a precise mask
+            t_slice = t_list[idx_start:idx_end]
+            t_rel = t_slice - t_start
+            mask = (t_rel >= 0) & (t_rel <= duration)
+            
+            if not np.any(mask):
+                continue
+                
+            t_rel_valid = t_rel[mask]
+            signal = self._pulse_envelope_vectorized(t_rel_valid, p)
+            
+            if port == 'q0:mw':
+                q_drive[idx_start:idx_end][mask] += signal
+            elif port == 'q0:res':
+                res_drive[idx_start:idx_end][mask] += signal
 
         qubit_drive_i = np.real(q_drive)
         qubit_drive_q = np.imag(q_drive)
