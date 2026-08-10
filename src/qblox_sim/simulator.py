@@ -4,6 +4,7 @@ import pandas as pd
 import qutip
 from qblox_scheduler import Schedule, SerialCompiler, QuantumDevice, BasicTransmonElement
 from qblox_scheduler.operations import SquarePulse, GaussPulse, DRAGPulse, LoopOperation
+from qblox_sim.config import SimulationConfig
 import typing
 
 class SimulationResult:
@@ -38,27 +39,30 @@ class QbloxQutipSimulator:
     """
 
     def __init__(self, params: dict, configs: typing.Optional[dict] = None):
-        self.params = params
+        self.params = params  # Keeping original reference for safety during refactor
         self.configs = configs
         
-        # System Frequencies & Parameters
-        self.f_q = params.get('f_q', 5.0e9)
-        self.f_d = params.get('f_d', self.f_q)
-        self.f_res = params.get('f_res', 6.0e9)
-        self.f_d_res = params.get('f_d_res', self.f_res)
-        self.chi = params.get('chi', 1.0e6)
-        self.cable_delay = params.get('cable_delay', 120e-9)  # Physical propagation delay in seconds
+        # --- PHASE 1: Wire in Configuration Layer ---
+        self.cfg = SimulationConfig.from_dict(params)
         
-        # Transmon Hilbert Space Dimensions & Anharmonicity
-        self.N_q = params.get('N_q', 3)          # Default to 3 levels for transmon
-        self.alpha = params.get('alpha', -300.0e6) # Anharmonicity in Hz
+        # --- STRANGLER PATTERN: Temporary mapping ---
+        # We bind these to self.* so the rest of the legacy code still works.
+        # These will be completely removed in Phase 2!
+        self.f_q = self.cfg.qubit.f_q
+        self.f_d = self.cfg.qubit.f_d
+        self.f_res = self.cfg.resonator.f_res
+        self.f_d_res = self.cfg.resonator.f_d_res
+        self.chi = self.cfg.resonator.chi
+        self.cable_delay = self.cfg.acquisition.cable_delay
         
-        self.rabi_freq_per_volt = params.get('rabi_freq_per_volt', 10.0e6)
-        self.rabi_freq_res_per_volt = params.get('rabi_freq_res_per_volt', 10.0e6)
-        self.T1 = params.get('T1', np.inf)
-        self.T2 = params.get('T2', np.inf)
-        self.kappa = params.get('kappa', 1e6)
-        self.N_res = params.get('N_res', 5)
+        self.N_q = self.cfg.qubit.N_q
+        self.alpha = self.cfg.qubit.alpha
+        self.rabi_freq_per_volt = self.cfg.qubit.rabi_freq_per_volt
+        self.rabi_freq_res_per_volt = self.cfg.resonator.rabi_freq_res_per_volt
+        self.T1 = self.cfg.qubit.T1
+        self.T2 = self.cfg.qubit.T2
+        self.kappa = self.cfg.resonator.kappa
+        self.N_res = self.cfg.resonator.N_res
 
         # -------------------------------------------------------------
         # Transmon & Readout Operators (Hilbert Space: N_q x N_res)
@@ -104,12 +108,12 @@ class QbloxQutipSimulator:
         1. SSBIntegrationComplex Handler
         Projects ground/excited probabilities onto complex voltage centroids with noise.
         """
-        sigma = self.params.get('noise_sigma', 0.02)
-        v_0 = self.params.get('v_0', complex(0.05, 0.05))
-        v_1 = self.params.get('v_1', complex(-0.05, -0.05))
+        sigma = self.cfg.acquisition.noise_sigma
+        v_0 = self.cfg.acquisition.v_0
+        v_1 = self.cfg.acquisition.v_1
 
-        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
-        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 0)), rho_q)))
+        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
 
         centroid = prob_0 * v_0 + prob_1 * v_1
         I_val = float(np.real(centroid) + np.random.normal(0, sigma))
@@ -122,7 +126,9 @@ class QbloxQutipSimulator:
         State discrimination mapping to discrete 0 or 1.
         """
         acq_info = acq_info or {}
-        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
+        
+        # Cleanly use config instead of self.N_q
+        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
 
         acq_rotation = acq_info.get('acq_rotation', None)
         acq_threshold = acq_info.get('acq_threshold', None)
@@ -138,20 +144,20 @@ class QbloxQutipSimulator:
         return int(outcome)
 
     def _process_trace(
-    self, 
-    t_list: np.ndarray, 
-    states: list, 
-    acq_start_sec: float, 
-    acq_duration: float, 
-    acq_info: typing.Optional[dict] = None
+        self, 
+        t_list: np.ndarray, 
+        states: list, 
+        acq_start_sec: float, 
+        acq_duration: float, 
+        acq_info: typing.Optional[dict] = None
     ) -> np.ndarray:
         r"""
         Time of Flight (TOF) digitized time-series voltage wave <a(t) + a^\dagger(t)>.
         """
         acq_info = acq_info or {}
 
-        # Use acq_delay from schedule/info, falling back to physical cable_delay parameter
-        default_delay = getattr(self, 'params', {}).get('cable_delay', 0.0)
+        # 1. STRANGLER FIX: Use clean config for cable delay
+        default_delay = self.cfg.acquisition.cable_delay
         acq_delay = acq_info.get('acq_delay', default_delay)
 
         t_effective_start = acq_start_sec + acq_delay
@@ -160,7 +166,8 @@ class QbloxQutipSimulator:
         mask = (t_list >= t_effective_start - 1e-12) & (t_list <= t_effective_end + 1e-12)
         indices = np.where(mask)[0]
 
-        sigma = getattr(self, 'params', {}).get('noise_sigma', 0.01)
+        # 2. STRANGLER FIX: Use clean config for noise
+        sigma = self.cfg.acquisition.noise_sigma
 
         if len(indices) == 0:
             num_samples = max(100, int(round(acq_duration * 1e9)))
@@ -384,7 +391,7 @@ class QbloxQutipSimulator:
 
 # 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
         # Check params for a custom dt, otherwise default to 1 ns for better performance
-        step_size = self.params.get('dt', 1.0e-9) 
+        step_size = self.cfg.dt 
         num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
         t_list = np.linspace(0, total_duration, num_points)
         dt_actual = t_list[1] - t_list[0] if len(t_list) > 1 else step_size
