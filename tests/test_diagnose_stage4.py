@@ -8,15 +8,16 @@ from qblox_scheduler.operations.expressions import DType
 from qblox_scheduler.operations import SquarePulse
 from qblox_scheduler.resources import ClockResource
 
-from qblox_sim.simulator import QbloxLoopSimulator
+from qblox_sim.simulator import QbloxQutipSimulator
 from qblox_sim.signals import extract_amplitude, ScheduleSignalProvider
 
 
 def test_diagnose_stage4_granular(default_qubit_params):
-    sim = QbloxLoopSimulator(default_qubit_params)
+    sim = QbloxQutipSimulator(default_qubit_params)
 
+    f_q = sim.cfg.qubits['q0'].f_q
     sched = Schedule("Debug Loop Sweep")
-    sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
+    sched.add_resource(ClockResource(name="q0.01", freq=f_q))
     amp_domain = linspace(0.0, 0.5, 5, dtype=DType.AMPLITUDE)
     with sched.loop(amp_domain) as amp:
         sched.add(SquarePulse(amp=amp, duration=50e-9, port="q0:mw", clock="q0.01"))
@@ -34,19 +35,18 @@ def test_diagnose_stage4_granular(default_qubit_params):
         for idx, p in enumerate(pulses_list):
             raw_t = p.get('abs_time', 0.0) or 0.0
             raw_dur = p.get('duration', 0.0) or 0.0
-            raw_amp = extract_amplitude(p)  # PHASE 3 FIX: Use exported function
+            raw_amp = extract_amplitude(p)
             print(f"Record {idx:2d} | port={repr(p.get('port')):<7s} | t0={raw_t*1e9:5.1f}ns | dur={raw_dur*1e9:4.1f}ns | amp={raw_amp}")
 
-        # PHASE 3 FIX: Intercept ScheduleSignalProvider to monitor drive array generation
         orig_get_drives = ScheduleSignalProvider.get_drives
 
         def spy_get_drives(provider_self, t_list: np.ndarray):
             drives = orig_get_drives(provider_self, t_list)
-            q_drive = drives["q_drive"]
-            res_drive = drives["res_drive"]
+            q_drive = drives.get("q0:mw", np.zeros_like(t_list))
+            res_drive = drives.get("q0:res", np.zeros_like(t_list))
             
             non_zero_q = np.count_nonzero(q_drive)
-            max_q_amp = np.max(np.abs(q_drive))
+            max_q_amp = np.max(np.abs(q_drive)) if len(q_drive) > 0 else 0.0
             
             provider_logs.append({
                 'num_time_points': len(t_list),

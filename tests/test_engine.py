@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import qutip
-from qblox_sim.config import SimulationConfig
+from qblox_sim.config import SimulationConfig, QubitConfig
 from qblox_sim.physics import QuantumSystem
 from qblox_sim.engine import QuTiPEngine
 
@@ -12,21 +12,18 @@ def default_system():
     return QuantumSystem(cfg)
 
 def test_qutip_engine_basic_execution(default_system):
-    """Tests that the engine correctly integrates a zero-drive schedule."""
+    """Tests that the engine correctly integrates a schedule with zero/port drives."""
     engine = QuTiPEngine()
-    
-    # Create a short 10ns time grid
     t_list = np.linspace(0, 10e-9, 10)
     
-    # Provide zero drives
+    # Drives mapped via new port naming syntax
     drives = {
-        "q_drive": np.zeros_like(t_list, dtype=complex),
-        "res_drive": np.zeros_like(t_list, dtype=complex)
+        "q0:mw": np.zeros_like(t_list, dtype=complex),
+        "q0:res": np.zeros_like(t_list, dtype=complex)
     }
     
     initial_state = default_system.get_default_initial_state()
     
-    # Run the solver
     result = engine.run(
         system=default_system, 
         drives=drives, 
@@ -34,13 +31,10 @@ def test_qutip_engine_basic_execution(default_system):
         initial_state=initial_state
     )
     
-    # Verify the result object returned states for every time step
     assert result is not None
     assert hasattr(result, 'states')
     assert len(result.states) == len(t_list)
     
-    # Since there are no drives and the system started in the ground state,
-    # it should remain entirely in the ground state.
     final_state = result.states[-1]
     rho_q = final_state.ptrace(0) if final_state.type == 'oper' else qutip.ket2dm(final_state).ptrace(0)
     
@@ -54,12 +48,10 @@ def test_qutip_engine_options_passthrough(default_system):
     engine = QuTiPEngine()
     t_list = np.linspace(0, 1e-9, 2)
     drives = {
-        "q_drive": np.zeros_like(t_list, dtype=complex),
-        "res_drive": np.zeros_like(t_list, dtype=complex)
+        "q0:mw": np.zeros_like(t_list, dtype=complex),
+        "q0:res": np.zeros_like(t_list, dtype=complex)
     }
     initial_state = default_system.get_default_initial_state()
-    
-    # Set a custom option that QuTiP will recognize
     custom_options = {"nsteps": 1000, "store_states": True}
     
     result = engine.run(
@@ -71,3 +63,22 @@ def test_qutip_engine_options_passthrough(default_system):
     )
     
     assert len(result.states) == 2
+
+def test_multi_qubit_drive_routing():
+    """Tests that drives on specific qubit ports execute independently."""
+    cfg = SimulationConfig(
+        qubits={"q0": QubitConfig(N_q=2), "q1": QubitConfig(N_q=2)},
+        resonators={}
+    )
+    system = QuantumSystem(cfg)
+    engine = QuTiPEngine()
+    
+    t_list = np.linspace(0, 5e-9, 5)
+    drives = {
+        "q0:mw": np.ones_like(t_list, dtype=complex) * 0.1,
+        "q1:mw": np.zeros_like(t_list, dtype=complex)
+    }
+    initial_state = system.get_default_initial_state()
+    result = engine.run(system=system, drives=drives, t_list=t_list, initial_state=initial_state)
+    
+    assert len(result.states) == len(t_list)

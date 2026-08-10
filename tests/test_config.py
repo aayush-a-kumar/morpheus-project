@@ -1,4 +1,6 @@
-from qblox_sim.config import SimulationConfig
+import pytest
+from qblox_sim.config import SimulationConfig, QubitConfig, ResonatorConfig, CouplingConfig
+
 
 def test_config_defaults():
     cfg = SimulationConfig()
@@ -6,13 +8,22 @@ def test_config_defaults():
     assert cfg.qubit.N_q == 3
     assert cfg.resonator.N_res == 5
 
-def test_config_from_legacy_dict():
-    legacy_params = {'f_q': 6.2e9, 'N_q': 2, 'noise_sigma': 0.05}
-    cfg = SimulationConfig.from_dict(legacy_params)
+
+def test_multi_qubit_config_parsing():
+    multi_params = {
+        "qubits": {
+            "q0": QubitConfig(f_q=5.0e9),
+            "q1": QubitConfig(f_q=5.2e9)
+        },
+        "resonators": {
+            "q0": ResonatorConfig(f_res=6.0e9),
+            "q1": ResonatorConfig(f_res=6.2e9)
+        },
+        "couplings": [CouplingConfig(q1="q0", q2="q1", J=10e6)]
+    }
+    cfg = SimulationConfig.from_dict(multi_params)
     
-    # Custom values updated
-    assert cfg.qubit.f_q == 6.2e9
-    assert cfg.qubit.N_q == 2
-    assert cfg.acquisition.noise_sigma == 0.05
-    # Unspecified values fall back to defaults
-    assert cfg.resonator.f_res == 6.0e9
+    assert len(cfg.qubits) == 2
+    assert cfg.qubits["q1"].f_q == 5.2e9
+    assert len(cfg.couplings) == 1
+    assert cfg.couplings[0].J == 10e6

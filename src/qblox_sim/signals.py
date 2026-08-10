@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-from typing import Protocol, Dict, List, Any, Union
+from typing import Protocol, Dict, Any, Union, Sequence, Mapping
 
-def extract_amplitude(source: Union[dict, pd.Series], default: Any = 0.0) -> Any:
+def extract_amplitude(source: Union[Mapping[str, Any], pd.Series], default: Any = 0.0) -> Any:
     """Safely extract amplitude from a dict or pandas Series, handling None and NaN values.
     Preserves Variable objects for symbolic/loop resolution.
     """
@@ -19,19 +19,21 @@ def extract_amplitude(source: Union[dict, pd.Series], default: Any = 0.0) -> Any
                     return val
     return default
 
+
 class SignalProvider(Protocol):
     """Abstract interface for drive signal providers."""
     def get_drives(self, t_list: np.ndarray) -> Dict[str, np.ndarray]:
         """Returns a map of drive channels to complex envelope arrays."""
         ...
 
+
 class ScheduleSignalProvider:
     """Parses Qblox Schedule timing tables into IQ time-series arrays."""
     
-    def __init__(self, pulses_list: List[Dict[str, Any]]):
+    def __init__(self, pulses_list: Sequence[Mapping[str, Any]]):
         self.pulses_list = pulses_list
 
-    def _pulse_envelope_vectorized(self, t_rel: np.ndarray, pulse_info: dict) -> np.ndarray:
+    def _pulse_envelope_vectorized(self, t_rel: np.ndarray, pulse_info: Mapping[str, Any]) -> np.ndarray:
         duration = pulse_info['duration']
         amp = extract_amplitude(pulse_info)
         phase_rad = np.deg2rad(pulse_info.get('phase', 0.0))
@@ -58,17 +60,19 @@ class ScheduleSignalProvider:
         return envelope * np.exp(1j * phase_rad)
 
     def get_drives(self, t_list: np.ndarray) -> Dict[str, np.ndarray]:
-        q_drive = np.zeros_like(t_list, dtype=complex)
-        res_drive = np.zeros_like(t_list, dtype=complex)
+        drives: Dict[str, np.ndarray] = {}
         
         if len(t_list) <= 1:
-            return {"q_drive": q_drive, "res_drive": res_drive}
+            return drives
             
         dt_actual = t_list[1] - t_list[0]
         t_start_grid = t_list[0]
 
         for p in self.pulses_list:
             port = p.get('port')
+            if not port:
+                continue
+                
             t_start = p['abs_time']
             duration = p['duration']
             t_end = t_start + duration
@@ -89,9 +93,9 @@ class ScheduleSignalProvider:
             t_rel_valid = t_rel[mask]
             signal = self._pulse_envelope_vectorized(t_rel_valid, p)
             
-            if port == 'q0:mw':
-                q_drive[idx_start:idx_end][mask] += signal
-            elif port == 'q0:res':
-                res_drive[idx_start:idx_end][mask] += signal
+            # Dynamically aggregate signals into their specific hardware port
+            if port not in drives:
+                drives[port] = np.zeros_like(t_list, dtype=complex)
+            drives[port][idx_start:idx_end][mask] += signal
                 
-        return {"q_drive": q_drive, "res_drive": res_drive}
+        return drives

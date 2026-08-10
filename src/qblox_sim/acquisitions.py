@@ -24,10 +24,14 @@ class AcquisitionHandler(ABC):
         pass
 
     def _get_probabilities(self, rho_q: qutip.Qobj, cfg: SimulationConfig) -> Tuple[float, float, float]:
-        """Helper to extract level probabilities from the reduced qubit density matrix."""
-        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(cfg.qubit.N_q, 0)), rho_q)))
-        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(cfg.qubit.N_q, 1)), rho_q)))
-        prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(cfg.qubit.N_q, 2)), rho_q))) if cfg.qubit.N_q >= 3 else 0.0
+        """Helper to extract level probabilities dynamically based on actual state dimension."""
+        # Dynamically read the dimension of the reduced density matrix
+        dim = rho_q.shape[0]
+        
+        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(dim, 0)), rho_q))) if dim > 0 else 0.0
+        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(dim, 1)), rho_q))) if dim > 1 else 0.0
+        prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(dim, 2)), rho_q))) if dim > 2 else 0.0
+        
         return prob_0, prob_1, prob_2
 
 
