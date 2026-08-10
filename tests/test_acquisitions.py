@@ -5,6 +5,7 @@ from qblox_scheduler import Schedule
 from qblox_scheduler.operations import Measure
 from qblox_scheduler.resources import ClockResource
 from qblox_sim.simulator import QbloxQutipSimulator, QbloxQ1Simulator
+from qblox_sim.config import SimulationConfig, QubitConfig, ResonatorConfig
 from qblox_sim.acquisitions import (
     SSBIntegrationHandler, 
     ThresholdedAcquisitionHandler, 
@@ -123,3 +124,89 @@ def test_q1simulator_mock_memory_injection(default_qubit_params):
         assert hasattr(seq, 'acquisitions') or hasattr(seq, '_acquisition_mock_data'), (
             "Q1Simulator sequencer lacks mock acquisition storage attributes."
         )
+
+
+def test_joint_probabilities_2qubit_bell_state():
+    """Verify 2-qubit Bell state (|00> + |11>)/sqrt(2) extracts prob_00 = 0.5, prob_11 = 0.5, and correct marginals."""
+    cfg = SimulationConfig(
+        qubits={
+            "q0": QubitConfig(N_q=3),
+            "q1": QubitConfig(N_q=3)
+        },
+        resonators={
+            "q0": ResonatorConfig(N_res=3)
+        }
+    )
+    handler = SSBIntegrationHandler()
+
+    # Tensor space: [q0 (dim 3), q1 (dim 3), res0 (dim 3)]
+    q0_0, q0_1 = qutip.basis(3, 0), qutip.basis(3, 1)
+    q1_0, q1_1 = qutip.basis(3, 0), qutip.basis(3, 1)
+    res_0 = qutip.basis(3, 0)
+
+    ket_000 = qutip.tensor(q0_0, q1_0, res_0)
+    ket_110 = qutip.tensor(q0_1, q1_1, res_0)
+    bell_state = (ket_000 + ket_110).unit()
+
+    probs = handler._get_joint_probabilities(bell_state, cfg)
+
+    # 1. Joint basis populations
+    assert np.isclose(probs["prob_00"], 0.5, atol=1e-5)
+    assert np.isclose(probs["prob_11"], 0.5, atol=1e-5)
+    assert np.isclose(probs["prob_01"], 0.0, atol=1e-5)
+    assert np.isclose(probs["prob_10"], 0.0, atol=1e-5)
+
+    # 2. Primary qubit marginals
+    assert np.isclose(probs["prob_0"], 0.5, atol=1e-5)
+    assert np.isclose(probs["prob_1"], 0.5, atol=1e-5)
+
+    # 3. Leakage manifold check
+    assert np.isclose(probs["leakage_prob_2"], 0.0, atol=1e-5)
+
+
+def test_joint_probabilities_leakage_detection():
+    """Verify state population in the |2> state is quantified in leakage_prob_2."""
+    cfg = SimulationConfig(
+        qubits={
+            "q0": QubitConfig(N_q=3),
+            "q1": QubitConfig(N_q=3)
+        }
+    )
+    handler = SSBIntegrationHandler()
+
+    # Qubit 0 in state |2> (leaked) and Qubit 1 in state |0>
+    q0_2 = qutip.basis(3, 2)
+    q1_0 = qutip.basis(3, 0)
+    leak_state = qutip.tensor(q0_2, q1_0)
+
+    probs = handler._get_joint_probabilities(leak_state, cfg)
+
+    assert np.isclose(probs["prob_00"], 0.0, atol=1e-5)
+    assert np.isclose(probs["prob_11"], 0.0, atol=1e-5)
+    assert np.isclose(probs["leakage_prob_2"], 1.0, atol=1e-5)
+
+
+def test_3qubit_dynamic_joint_probabilities():
+    """Verify dynamic scaling to 3 qubits produces all 2^3 computational keys."""
+    cfg = SimulationConfig(
+        qubits={
+            "q0": QubitConfig(N_q=2),
+            "q1": QubitConfig(N_q=2),
+            "q2": QubitConfig(N_q=2)
+        }
+    )
+    handler = ThresholdedAcquisitionHandler()
+
+    # Prepare state |101>
+    q0_1 = qutip.basis(2, 1)
+    q1_0 = qutip.basis(2, 0)
+    q2_1 = qutip.basis(2, 1)
+    state_101 = qutip.tensor(q0_1, q1_0, q2_1)
+
+    probs = handler._get_joint_probabilities(state_101, cfg)
+
+    expected_keys = {f"prob_{b0}{b1}{b2}" for b0 in (0, 1) for b1 in (0, 1) for b2 in (0, 1)}
+    assert expected_keys.issubset(probs.keys())
+
+    assert np.isclose(probs["prob_101"], 1.0, atol=1e-5)
+    assert np.isclose(probs["prob_000"], 0.0, atol=1e-5)
