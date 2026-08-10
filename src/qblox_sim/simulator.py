@@ -148,6 +148,9 @@ class QbloxQutipSimulator:
 
     def _resolve_loop_pulses(self, pulses: pd.DataFrame, uncompiled_ops: dict, loops: list) -> pd.DataFrame:
         resolved_amps, resolved_phases, resolved_durations, resolved_wfs = [], [], [], []
+        
+        # Track phase shifts by CLOCK, not port
+        tracked_phases = {}
 
         for _, row in pulses.iterrows():
             t = row['abs_time']
@@ -155,6 +158,7 @@ class QbloxQutipSimulator:
             op = self._get_op_from_hash(op_hash, uncompiled_ops)
             data = getattr(op, 'data', op) if hasattr(op, 'data') else op
 
+            # --- 1. Loop Variable Resolution (Defines 'mapping') ---
             mapping = {}
             for l in loops:
                 if l['t_start'] <= t < l['t_end'] + 1e-15:
@@ -168,17 +172,42 @@ class QbloxQutipSimulator:
                         if hasattr(var, 'name'): 
                             mapping[var.name] = val
 
-            a, p, dur, wf = 0.0, 0.0, row['duration'], 'square'
-            p_info_list = data.get('pulse_info', [])
+            # --- 2. Intercept Virtual Z Gates (Logical Phase Shifts) ---
+            logic_info = data.get('logic_info', data) if isinstance(data, dict) else {}
+            if 'phase_shift' in logic_info:
+                clock = logic_info.get('clock', data.get('clock', 'default'))
+                if clock not in tracked_phases:
+                    tracked_phases[clock] = 0.0
+                
+                # mapping is now safely defined!
+                resolved_shift = self._resolve_value(logic_info['phase_shift'], mapping)
+                tracked_phases[clock] += float(resolved_shift)
+
+            # --- 3. Standard Pulse Extraction ---
+            a, p, dur, wf = 0.0, 0.0, row.get('duration', 0.0), 'square'
+            
+            p_info_list = data.get('pulse_info', []) if isinstance(data, dict) else []
             if isinstance(p_info_list, dict): 
                 p_info_list = [p_info_list]
                 
             if p_info_list:
                 p_info = p_info_list[0]
+                clock = p_info.get('clock', 'default')
+                
+                if clock not in tracked_phases:
+                    tracked_phases[clock] = 0.0
+
+                if 'phase_shift' in p_info:
+                    resolved_shift = self._resolve_value(p_info['phase_shift'], mapping)
+                    tracked_phases[clock] += float(resolved_shift)
+
                 raw_amp = extract_amplitude(p_info)
                 a = self._resolve_value(raw_amp, mapping)
-                p = self._resolve_value(p_info.get('phase', 0.0), mapping)
-                dur = self._resolve_value(p_info.get('duration', row['duration']), mapping)
+                
+                base_phase = self._resolve_value(p_info.get('phase', 0.0), mapping)
+                p = float(base_phase) + tracked_phases[clock]
+                
+                dur = self._resolve_value(p_info.get('duration', row.get('duration', 0.0)), mapping)
                 wf = p_info.get('wf_func', 'square')
 
             resolved_amps.append(a)

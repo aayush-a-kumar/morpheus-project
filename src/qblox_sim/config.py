@@ -9,8 +9,12 @@ class QubitConfig:
     alpha: float = -300.0e6
     N_q: int = 3
     rabi_freq_per_volt: float = 10.0e6
+    flux_freq_per_volt: float = 1.0e9
     T1: float = np.inf
     T2: float = np.inf
+    # --- New Non-Linear Flux Parameters ---
+    v_phi0: Optional[float] = None  # Voltage required for a single flux quantum
+    f_max: Optional[float] = None   # The maximum 'sweet spot' frequency
 
 @dataclass(frozen=True)
 class ResonatorConfig:
@@ -43,7 +47,6 @@ class SimulationConfig:
     acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     dt: float = 1.0e-9
 
-    # --- Backward Compatibility Properties for Single-Qubit Access ---
     @property
     def qubit(self) -> QubitConfig:
         """Returns the primary 'q0' QubitConfig or first configured qubit."""

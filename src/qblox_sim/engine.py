@@ -37,6 +37,32 @@ class QuTiPEngine:
                 if np.any(q_q):
                     h.append([(1j * (bd - b)) * (omega_q / 2), q_q])  # type: ignore[operator]
 
+            # --- Flux (Z) Drive ---
+            fl_port = f"{q_name}:fl"
+            if fl_port in drives:
+                fl_drive = drives[fl_port]
+                fl_v = np.real(fl_drive)  # Flux pulses are baseband (real voltage)
+                
+                nq = system.nq[q_name]
+                
+                # Determine frequency shift array based on available config
+                if hasattr(q_cfg, 'v_phi0') and q_cfg.v_phi0 is not None:
+                    # Non-linear Transmon Tuning Arc
+                    f_max = q_cfg.f_max if q_cfg.f_max is not None else q_cfg.f_q
+                    
+                    # Map voltage array to frequency shift array
+                    freq_shift = f_max * (np.sqrt(np.abs(np.cos(np.pi * fl_v / q_cfg.v_phi0))) - 1.0)
+                    
+                    # Convert to angular frequency detuning
+                    flux_coupling_array = 2 * np.pi * freq_shift
+                else:
+                    # Fallback to linear shift (for test_flux_and_phase.py)
+                    flux_coupling = 2 * np.pi * q_cfg.flux_freq_per_volt
+                    flux_coupling_array = fl_v * flux_coupling
+                
+                if np.any(fl_v):
+                    h.append([-nq, flux_coupling_array])  # type: ignore[operator]
+
         # 2. Map Readout drives to all configured resonators
         for r_name, r_cfg in system.cfg.resonators.items():
             port_name = f"{r_name}:res"
