@@ -7,6 +7,7 @@ from qblox_scheduler.operations import SquarePulse, GaussPulse, DRAGPulse, LoopO
 from qblox_sim.config import SimulationConfig
 from qblox_sim.physics import QuantumSystem
 from qblox_sim.signals import ScheduleSignalProvider, extract_amplitude
+from qblox_sim.acquisitions import AcquisitionRegistry
 import typing
 
 class SimulationResult:
@@ -80,88 +81,89 @@ class QbloxQutipSimulator:
         self.sy = self.system.sy
         self.sz = self.system.sz
 
+    #NOTE: Deprecated to AcquisitionRegistry in acquisitions.py
     # =================================----------------========================
     # Acquisition Protocol Handlers
     # =========================================================================
-    def _process_ssb_integration(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> typing.Tuple[complex, float, float]:
-        """
-        1. SSBIntegrationComplex Handler
-        Projects ground/excited probabilities onto complex voltage centroids with noise.
-        """
-        sigma = self.cfg.acquisition.noise_sigma
-        v_0 = self.cfg.acquisition.v_0
-        v_1 = self.cfg.acquisition.v_1
+    # def _process_ssb_integration(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> typing.Tuple[complex, float, float]:
+    #     """
+    #     1. SSBIntegrationComplex Handler
+    #     Projects ground/excited probabilities onto complex voltage centroids with noise.
+    #     """
+    #     sigma = self.cfg.acquisition.noise_sigma
+    #     v_0 = self.cfg.acquisition.v_0
+    #     v_1 = self.cfg.acquisition.v_1
 
-        prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 0)), rho_q)))
-        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
+    #     prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 0)), rho_q)))
+    #     prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
 
-        centroid = prob_0 * v_0 + prob_1 * v_1
-        I_val = float(np.real(centroid) + np.random.normal(0, sigma))
-        Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
-        return I_val + 1j * Q_val, I_val, Q_val
+    #     centroid = prob_0 * v_0 + prob_1 * v_1
+    #     I_val = float(np.real(centroid) + np.random.normal(0, sigma))
+    #     Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
+    #     return I_val + 1j * Q_val, I_val, Q_val
 
-    def _process_thresholded(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> int:
-        """
-        2. ThresholdedAcquisition Handler
-        State discrimination mapping to discrete 0 or 1.
-        """
-        acq_info = acq_info or {}
+    # def _process_thresholded(self, rho_q: qutip.Qobj, acq_info: typing.Optional[dict] = None) -> int:
+    #     """
+    #     2. ThresholdedAcquisition Handler
+    #     State discrimination mapping to discrete 0 or 1.
+    #     """
+    #     acq_info = acq_info or {}
         
-        # Cleanly use config instead of self.N_q
-        prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
+    #     # Cleanly use config instead of self.N_q
+    #     prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.cfg.qubit.N_q, 1)), rho_q)))
 
-        acq_rotation = acq_info.get('acq_rotation', None)
-        acq_threshold = acq_info.get('acq_threshold', None)
+    #     acq_rotation = acq_info.get('acq_rotation', None)
+    #     acq_threshold = acq_info.get('acq_threshold', None)
 
-        if acq_rotation is not None and acq_threshold is not None and acq_threshold != 0:
-            val, _, _ = self._process_ssb_integration(rho_q, acq_info)
-            rot_rad = np.deg2rad(acq_rotation)
-            val_rot = val * np.exp(1j * rot_rad)
-            outcome = 1 if np.real(val_rot) > acq_threshold else 0
-        else:
-            outcome = 1 if np.random.random() < prob_1 else 0
+    #     if acq_rotation is not None and acq_threshold is not None and acq_threshold != 0:
+    #         val, _, _ = self._process_ssb_integration(rho_q, acq_info)
+    #         rot_rad = np.deg2rad(acq_rotation)
+    #         val_rot = val * np.exp(1j * rot_rad)
+    #         outcome = 1 if np.real(val_rot) > acq_threshold else 0
+    #     else:
+    #         outcome = 1 if np.random.random() < prob_1 else 0
 
-        return int(outcome)
+    #     return int(outcome)
 
-    def _process_trace(
-        self, 
-        t_list: np.ndarray, 
-        states: list, 
-        acq_start_sec: float, 
-        acq_duration: float, 
-        acq_info: typing.Optional[dict] = None
-    ) -> np.ndarray:
-        r"""
-        Time of Flight (TOF) digitized time-series voltage wave <a(t) + a^\dagger(t)>.
-        """
-        acq_info = acq_info or {}
+    # def _process_trace(
+    #     self, 
+    #     t_list: np.ndarray, 
+    #     states: list, 
+    #     acq_start_sec: float, 
+    #     acq_duration: float, 
+    #     acq_info: typing.Optional[dict] = None
+    # ) -> np.ndarray:
+    #     r"""
+    #     Time of Flight (TOF) digitized time-series voltage wave <a(t) + a^\dagger(t)>.
+    #     """
+    #     acq_info = acq_info or {}
 
-        # 1. STRANGLER FIX: Use clean config for cable delay
-        default_delay = self.cfg.acquisition.cable_delay
-        acq_delay = acq_info.get('acq_delay', default_delay)
+    #     # 1. STRANGLER FIX: Use clean config for cable delay
+    #     default_delay = self.cfg.acquisition.cable_delay
+    #     acq_delay = acq_info.get('acq_delay', default_delay)
 
-        t_effective_start = acq_start_sec + acq_delay
-        t_effective_end = t_effective_start + acq_duration
+    #     t_effective_start = acq_start_sec + acq_delay
+    #     t_effective_end = t_effective_start + acq_duration
 
-        mask = (t_list >= t_effective_start - 1e-12) & (t_list <= t_effective_end + 1e-12)
-        indices = np.where(mask)[0]
+    #     mask = (t_list >= t_effective_start - 1e-12) & (t_list <= t_effective_end + 1e-12)
+    #     indices = np.where(mask)[0]
 
-        # 2. STRANGLER FIX: Use clean config for noise
-        sigma = self.cfg.acquisition.noise_sigma
+    #     # 2. STRANGLER FIX: Use clean config for noise
+    #     sigma = self.cfg.acquisition.noise_sigma
 
-        if len(indices) == 0:
-            num_samples = max(100, int(round(acq_duration * 1e9)))
-            idx_closest = np.argmin(np.abs(t_list - acq_start_sec))
-            state = states[idx_closest]
-            exp_val = float(np.real(qutip.expect(self.a + self.ad, state)))
-            trace_data = exp_val + np.random.normal(0, sigma, size=num_samples)
-        else:
-            trace_data = np.array([
-                float(np.real(qutip.expect(self.a + self.ad, states[i]))) + np.random.normal(0, sigma)
-                for i in indices
-            ])
+    #     if len(indices) == 0:
+    #         num_samples = max(100, int(round(acq_duration * 1e9)))
+    #         idx_closest = np.argmin(np.abs(t_list - acq_start_sec))
+    #         state = states[idx_closest]
+    #         exp_val = float(np.real(qutip.expect(self.a + self.ad, state)))
+    #         trace_data = exp_val + np.random.normal(0, sigma, size=num_samples)
+    #     else:
+    #         trace_data = np.array([
+    #             float(np.real(qutip.expect(self.a + self.ad, states[i]))) + np.random.normal(0, sigma)
+    #             for i in indices
+    #         ])
 
-        return trace_data
+    #     return trace_data
 
     # =========================================================================
     # Helpers & Compilation
@@ -225,6 +227,21 @@ class QbloxQutipSimulator:
             compiler = SerialCompiler(name="compiler", quantum_device=device)
             compiled_sched = compiler.compile(schedule)
             return compiled_sched.timing_table.data, compiled_sched.operations # type: ignore[attr-defined]
+
+
+    # Backward-compatible wrapper for legacy diagnostic tests
+    def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
+        """Backward-compatible scalar envelope evaluation delegating to ScheduleSignalProvider."""
+        t_start = pulse_info.get('abs_time', 0.0) or 0.0
+        duration = pulse_info.get('duration', 0.0) or 0.0
+        t_rel = t - t_start
+
+        if t_rel < 0 or t_rel > duration:
+            return 0.0j
+
+        provider = ScheduleSignalProvider([pulse_info])
+        envelope_array = provider._pulse_envelope_vectorized(np.array([t_rel]), pulse_info)
+        return complex(envelope_array[0])
 
     #NOTE: Deprecated!!
     # def _pulse_envelope(self, t: float, pulse_info: dict) -> complex:
@@ -372,21 +389,14 @@ class QbloxQutipSimulator:
             total_duration = max(total_duration, acq_max)
 
         # 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
-        # Check params for a custom dt, otherwise default to 1 ns for better performance
-        step_size = self.cfg.dt 
+        step_size = self.cfg.dt
         num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
         t_list = np.linspace(0, total_duration, num_points)
-        dt_actual = t_list[1] - t_list[0] if len(t_list) > 1 else step_size
 
         if initial_state is None:
-            initial_state = qutip.tensor(qutip.basis(self.N_q, 0), qutip.basis(self.N_res, 0))
+            initial_state = qutip.tensor(qutip.basis(self.cfg.qubit.N_q, 0), qutip.basis(self.cfg.resonator.N_res, 0))
             
-        # 4 & 5. Pre-sample drive signals into 1D NumPy arrays using vectorized slicing
-        q_drive = np.zeros_like(t_list, dtype=complex)
-        res_drive = np.zeros_like(t_list, dtype=complex)
-        t_start_grid = t_list[0]
-
-        # --- PHASE 3 SIGNAL REPLACEMENT ---
+        # 4 & 5. PHASE 3: Generate drive signals via SignalProvider
         signal_provider = ScheduleSignalProvider(pulses_list)
         drives = signal_provider.get_drives(t_list)
 
@@ -394,9 +404,8 @@ class QbloxQutipSimulator:
         qubit_drive_q = np.imag(drives["q_drive"])
         res_drive_i = np.real(drives["res_drive"])
         res_drive_q = np.imag(drives["res_drive"])
-        # ----------------------------------
 
-        # (Replace everything from omega_q = ... down to the end of c_ops = [...])
+        # PHASE 2: Physics setup
         omega_q = 2 * np.pi * self.cfg.qubit.rabi_freq_per_volt
         omega_res = 2 * np.pi * self.cfg.resonator.rabi_freq_res_per_volt
         
@@ -415,7 +424,7 @@ class QbloxQutipSimulator:
         options = {"nsteps": 500000}
         result = qutip.mesolve(h, initial_state, t_list, c_ops=c_ops, options=options)
 
-        # 7. Measurement extraction
+        # 7. Measurement extraction (Phase 4)
         measurements = []
         for _, acq in acquisitions.iterrows():
             acq_time = acq['abs_time']
@@ -438,43 +447,34 @@ class QbloxQutipSimulator:
 
             idx = np.argmin(np.abs(t_list - acq_time))
             state = result.states[idx]
-            rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
 
-            prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
-            prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
-            prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q))) if self.N_q >= 3 else 0.0
-
-            if protocol in ('SSBIntegrationComplex', 'SSBIntegration', 'Integration'):
-                val, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
-                outcome = 1 if np.random.random() < prob_1 else 0
-            elif protocol in ('ThresholdedAcquisition', 'Thresholded'):
-                outcome = self._process_thresholded(rho_q, acq_info)
-                val = outcome
-                _, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
-            elif protocol in ('Trace', 'TraceAcquisition'):
-                val = self._process_trace(t_list, result.states, acq_time, acq_duration, acq_info)
-                I_val = float(np.mean(val)) if len(val) > 0 else 0.0
-                Q_val = 0.0
-                outcome = 1 if np.random.random() < prob_1 else 0
-            else:
-                val, I_val, Q_val = self._process_ssb_integration(rho_q, acq_info)
-                outcome = 1 if np.random.random() < prob_1 else 0
+            #FIX: casting protocol to string to avoid issues with float('nan') or None
+            protocol = str(protocol) if protocol is not None else 'SSBIntegrationComplex'
+            # Fetch Strategy Handler and Execute
+            handler = AcquisitionRegistry.get_handler(protocol)
+            processed_data = handler.process(
+                state=state, 
+                t_list=t_list, 
+                states=result.states, 
+                acq_time=acq_time,
+                acq_duration=acq_duration,
+                acq_info=acq_info, 
+                cfg=self.cfg, 
+                a_op=self.system.a, 
+                ad_op=self.system.ad
+            )
 
             acq_channel = acq_info.get('acq_channel', acq.get('acq_channel', acq.get('acq_index', 'acq')))
-
-            measurements.append({
+            
+            # Merge processed values into the final dictionary
+            meas_dict = {
                 'name': acq_channel,
                 'protocol': protocol,
                 'time': acq_time,
                 'duration': acq_duration,
-                'prob_0': prob_0,
-                'prob_1': prob_1,
-                'leakage_prob_2': prob_2,
-                'outcome': outcome,
-                'I': I_val,
-                'Q': Q_val,
-                'value': val
-            })
+            }
+            meas_dict.update(processed_data)
+            measurements.append(meas_dict)
 
         result_container = SimulationResult(
             states=result.states if result is not None else [],
@@ -835,7 +835,6 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
             qrm = connected[self.readout_mod]
             acq_windows = qrm.get_acquisition_windows()
 
-            # Fallback: if acq_windows is empty, check for manually attached test windows on the sequencer
             if not acq_windows or not any(acq_windows.values()):
                 if hasattr(qrm, 'sequencers') and len(qrm.sequencers) > self.readout_seq:
                     seq_obj = qrm.sequencers[self.readout_seq]
@@ -846,7 +845,6 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
             print(f"Warning: Could not get acquisition windows: {e}")
             return []
 
-        # Access windows flexibly by readout sequencer index
         windows = (
             acq_windows.get(self.readout_seq)
             or acq_windows.get(str(self.readout_seq))
@@ -857,11 +855,8 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
         if not windows:
             return []
 
-        sigma = 0.02
-        v_0 = complex(0.05, 0.05)
-        v_1 = complex(-0.05, -0.05)
-
         measurements = []
+        handler = AcquisitionRegistry.get_handler('Trace')
         for acq in windows:
             try:
                 # Handle [(start, dur)], [start, dur], or (start, dur)
@@ -875,38 +870,35 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
                 acq_start_sec = float(acq_start_ns) * 1e-9
                 acq_duration_sec = float(duration_ns) * 1e-9
 
-                # 1. Generate physical 1D time-series trace using QuTiP states
-                trace_data = self._process_trace(
-                    t_list=self.t_list,
-                    states=result.states,
-                    acq_start_sec=acq_start_sec,
-                    acq_duration=acq_duration_sec,
-                    acq_info={'acq_delay': getattr(self, 'params', {}).get('cable_delay', 120e-9)}
-                )
-
-                # 2. Compute scalar I/Q centroids and probabilities
+                # 1. Compute state at acquisition time FIRST
                 idx = np.argmin(np.abs(self.t_list - acq_start_sec))
                 state = result.states[idx]
+                # Replace the call to self._process_trace with the AcquisitionRegistry handler
+                # 2. Generate physical 1D time-series trace using QuTiP state
+                # Single handler call handles probabilities, noise, and trace extraction
+                res_dict = handler.process(
+                    state=state,
+                    t_list=self.t_list,
+                    states=result.states,
+                    acq_time=acq_start_sec,
+                    acq_duration=acq_duration_sec,
+                    acq_info={'acq_delay': self.cfg.acquisition.cable_delay},
+                    cfg=self.cfg,
+                    a_op=self.system.a,
+                    ad_op=self.system.ad
+                )
 
-                rho_q = state.ptrace(0) if state.type == 'oper' else qutip.ket2dm(state).ptrace(0)
-                
-                prob_0 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 0)), rho_q)))
-                prob_1 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 1)), rho_q)))
-                prob_2 = float(np.real(qutip.expect(qutip.ket2dm(qutip.basis(self.N_q, 2)), rho_q))) if self.N_q >= 3 else 0.0
-
-                centroid = prob_0 * v_0 + prob_1 * v_1
-                I_val = float(np.real(centroid) + np.random.normal(0, sigma))
-                Q_val = float(np.imag(centroid) + np.random.normal(0, sigma))
+                trace_data = res_dict['value']
 
                 measurements.append({
                     'time': acq_start_sec,
                     'duration': acq_duration_sec,
-                    'prob_0': prob_0,
-                    'prob_1': prob_1,
-                    'leakage_prob_2': prob_2,
-                    'outcome': 1 if np.random.random() < prob_1 else 0,
-                    'I': I_val,
-                    'Q': Q_val,
+                    'prob_0': res_dict['prob_0'],
+                    'prob_1': res_dict['prob_1'],
+                    'leakage_prob_2': res_dict['leakage_prob_2'],
+                    'outcome': res_dict['outcome'],
+                    'I': res_dict['I'],
+                    'Q': res_dict['Q'],
                     'trace': trace_data,
                     'trace_I': np.real(trace_data),
                     'trace_Q': np.imag(trace_data)
