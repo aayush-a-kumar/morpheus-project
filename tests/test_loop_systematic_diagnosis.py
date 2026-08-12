@@ -7,16 +7,24 @@ from qblox_scheduler.operations.loop_domains import linspace
 from qblox_scheduler.operations.expressions import DType
 from qblox_scheduler.operations import SquarePulse
 from qblox_scheduler.resources import ClockResource
-from qblox_sim.simulator import QbloxLoopSimulator
+from qblox_sim.simulator import QbloxQutipSimulator
+from qblox_sim.signals import ScheduleSignalProvider
 
 
 def test_systematic_loop_diagnosis(default_qubit_params):
-    """Systematic 4-Stage Diagnostic Test for QbloxLoopSimulator."""
-    sim = QbloxLoopSimulator(default_qubit_params)
-    sim.rabi_freq_per_volt = 100e6  # 100 MHz / Volt
+    """Systematic 4-Stage Diagnostic Test for QbloxQutipSimulator."""
+    # Configure Rabi frequency per volt inside parameter dictionary
+    params = dict(default_qubit_params)
+    if 'qubits' in params and 'q0' in params['qubits']:
+        params['qubits']['q0']['rabi_freq_per_volt'] = 100e6
+    else:
+        params['rabi_freq_per_volt'] = 100e6
 
+    sim = QbloxQutipSimulator(params)
+
+    f_q = sim.cfg.qubits['q0'].f_q
     sched = Schedule("Diagnostic Rabi Sweep")
-    sched.add_resource(ClockResource(name="q0.01", freq=default_qubit_params['f_q']))
+    sched.add_resource(ClockResource(name="q0.01", freq=f_q))
     amp_domain = linspace(0.0, 0.5, 5, dtype=DType.AMPLITUDE)
     
     with sched.loop(amp_domain) as amp:
@@ -65,11 +73,12 @@ def test_systematic_loop_diagnosis(default_qubit_params):
         mask = (t_list >= pulse_start + 1e-9) & (t_list <= pulse_end - 1e-9)
         sampled_times = t_list[mask]
 
-        # FIX: Set abs_time to absolute pulse_start for accurate envelope sampling across shots
         p_info = pulse_records[idx * 2].copy()
         p_info['abs_time'] = pulse_start
         
-        sampled_envs = [sim._pulse_envelope(t, p_info) for t in sampled_times]
+        provider = ScheduleSignalProvider([p_info])
+        drives = provider.get_drives(sampled_times)
+        sampled_envs = drives.get("q0:mw", np.zeros_like(sampled_times))
         
         if len(sampled_envs) > 0:
             max_env = np.max(np.abs(sampled_envs))
@@ -85,11 +94,10 @@ def test_systematic_loop_diagnosis(default_qubit_params):
     start_z_values = []
     
     for idx in range(5):
-        # Query slightly inside shot window (+0.1 ns) to hit the shot's ground state reset point
         it_start_t = idx * 100e-9 + 0.1e-9
         t_idx = np.argmin(np.abs(t_list - it_start_t))
         state = result.states[t_idx]
-        z_val = qutip.expect(sim.sz, state).real
+        z_val = qutip.expect(sim.system.sz['q0'], state).real
         start_z_values.append(z_val)
 
     print("\n[STAGE 3 INSPECTION: Expectation <Z> at Start of Loop Iterations]:")
@@ -102,7 +110,7 @@ def test_systematic_loop_diagnosis(default_qubit_params):
     t_mid_it4 = 425e-9
     t_idx_mid4 = np.argmin(np.abs(t_list - t_mid_it4))
     state_mid4 = result.states[t_idx_mid4]
-    z_mid4 = qutip.expect(sim.sz, state_mid4).real
+    z_mid4 = qutip.expect(sim.system.sz['q0'], state_mid4).real
     
     print(f"\n[STAGE 4 INSPECTION]: <Z> at t = 425 ns (mid-pulse of amp=0.5V) = {z_mid4:+.4f}")
     assert z_mid4 < 0.95, f"Stage 4 Failed: Qubit state did not rotate under drive (<Z> = {z_mid4:.4f})"

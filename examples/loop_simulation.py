@@ -4,7 +4,7 @@ import qutip
 from qblox_scheduler import Schedule, SerialCompiler, QuantumDevice, BasicTransmonElement
 from qblox_scheduler.operations import SquarePulse, linspace, DType
 from qblox_scheduler.resources import ClockResource
-from qblox_sim.simulator import QbloxLoopSimulator
+from qblox_sim.simulator import QbloxQutipSimulator
 
 def run_loop_simulation():
     # 1. Setup device
@@ -36,7 +36,7 @@ def run_loop_simulation():
         sched.add(SquarePulse(amp=0, duration=50e-9, port="q0:mw", clock="q0.01"))
 
     # 3. Setup Loop Simulator
-    sim = QbloxLoopSimulator(params)
+    sim = QbloxQutipSimulator(params)
     
     # 4. Run Simulation
     print("Running looped simulation...")
