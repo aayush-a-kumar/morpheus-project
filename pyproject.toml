@@ -22,9 +22,20 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "jupyter",
     "ipykernel",
+    "ruff",
+    "pyright",
+    "typos",
+    "vulture",
+    "mdformat",
+    "commitizen"
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

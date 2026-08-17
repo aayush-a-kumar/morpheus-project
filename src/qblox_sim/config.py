@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Any, Dict, List

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 from unittest.mock import MagicMock, PropertyMock, patch
 import numpy as np
 import pandas as pd

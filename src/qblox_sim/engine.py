@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import qutip
 import numpy as np
 from typing import Dict, Optional, Any, List

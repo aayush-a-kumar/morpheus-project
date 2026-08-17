@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import pytest
 from qblox_sim.config import SimulationConfig, QubitConfig, ResonatorConfig, CouplingConfig
 

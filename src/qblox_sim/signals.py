@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import numpy as np
 import pandas as pd
 from typing import Protocol, Dict, Any, Union, Sequence, Mapping

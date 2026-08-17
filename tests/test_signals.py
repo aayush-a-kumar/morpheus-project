@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import numpy as np
 from qblox_sim.signals import ScheduleSignalProvider, extract_amplitude
 

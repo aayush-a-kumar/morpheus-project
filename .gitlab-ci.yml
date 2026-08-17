@@ -1,0 +1,83 @@
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  GIT_STRATEGY: "clone"
+  PYTHON_VERSION: "3.10"
+
+default:
+  # Using the lightning-fast UV image to mirror qblox-scheduler
+  image: ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-trixie
+  cache:
+    key: ${CI_PROJECT_PATH}-py${PYTHON_VERSION}-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cache/pip
+    policy: pull-push
+  before_script:
+    - uv --version
+    - uv venv
+    - . .venv/bin/activate
+    - uv pip install -e .[dev]
+    - pip freeze > frozen-requirements.txt
+
+stages:
+  - Static Analysis
+  - Test
+
+########################################
+# Static Analysis (Linters & Type Checks)
+########################################
+
+ruff check:
+  stage: Static Analysis
+  script:
+    - mkdir -p ruff
+    # Run ruff once for GitLab Code Quality integration
+    - ruff check --output-format=gitlab > ruff/code-quality-report.json || exit_code=$?
+    # Run ruff a second time to show log output in terminal
+    - ruff check --output-format=pylint src/qblox_sim tests/
+  artifacts:
+    reports:
+      codequality: ruff/code-quality-report.json
+
+ruff format:
+  stage: Static Analysis
+  script:
+    - ruff format --diff src/qblox_sim tests/
+
+pyright:
+  stage: Static Analysis
+  script:
+    - pyright src/qblox_sim tests/
+
+########################################
+# Automated Testing
+########################################
+
+pytest:
+  stage: Test
+  parallel:
+    # Run tests on Python 3.10 and 3.13 simultaneously
+    matrix:
+      - PYTHON_VERSION: ["3.10", "3.13"]
+  variables:
+    PYTHON_VERSION: ${PYTHON_VERSION}
+  script:
+    # Target the src/qblox_sim directory for coverage
+    - pytest -v -s --junitxml=report.xml --cov=src/qblox_sim --cov-report term --cov-report xml:coverage${PYTHON_VERSION}.xml --color=yes tests/
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    paths:
+      - coverage${PYTHON_VERSION}.xml
+      - report.xml
+      - frozen-requirements.txt
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage${PYTHON_VERSION}.xml
