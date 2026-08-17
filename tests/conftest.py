@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 import pytest
 
+
 @pytest.fixture
 def default_qubit_params():
     """Provides default multi-qubit topology parameters for single-qubit baseline tests."""

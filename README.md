@@ -27,20 +27,10 @@ from qblox_scheduler.operations import GaussianPulse
 # 1. Setup multi-qubit/resonator parameters
 params = {
     "qubits": {
-        "q0": {
-            "f_q": 5.0e9, 
-            "rabi_freq_per_volt": 50e6, 
-            "T1": 20e-6, 
-            "T2": 10e-6
-        }
+        "q0": {"f_q": 5.0e9, "rabi_freq_per_volt": 50e6, "T1": 20e-6, "T2": 10e-6}
     },
-    "resonators": {
-        "q0": {
-            "f_res": 6.0e9, 
-            "kappa": 1.0e6
-        }
-    },
-    "dt": 1.0e-9
+    "resonators": {"q0": {"f_res": 6.0e9, "kappa": 1.0e6}},
+    "dt": 1.0e-9,
 }
 
 # 2. Create Schedule
@@ -53,7 +43,7 @@ res = sim.simulate(sched)
 
 # 4. Access Results
 print(f"Final state: {res['result'].states[-1]}")
-if res['measurements']:
+if res["measurements"]:
     print(f"Measurement Probability (Q0): {res['measurements'][0]['prob_1']}")
 ```
 

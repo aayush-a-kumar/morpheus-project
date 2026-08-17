@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
-import numpy as np
-import pytest
 import qutip
 from qblox_scheduler import Schedule
 from qblox_scheduler.operations import SquarePulse
 from qblox_scheduler.operations.expressions import DType
 from qblox_scheduler.operations.loop_domains import linspace
 from qblox_scheduler.resources import ClockResource
+
 from qblox_sim.simulator import QbloxQutipSimulator
 
 
@@ -28,7 +27,7 @@ def test_loop_amplitude_sweep(default_qubit_params):
     result = res["result"]
 
     final_state = result.states[-1]
-    final_z = qutip.expect(sim.system.sz['q0'], final_state).real
+    final_z = qutip.expect(sim.system.sz["q0"], final_state).real
 
     # Verify state rotated under maximum sweep amplitude
     assert final_z < 1.0, f"Expected state to rotate, got <Z> = {final_z}"
