@@ -153,8 +153,12 @@ class QbloxQutipSimulator:
         timing_table, operations_dict = self._get_compiled_schedule(schedule)
         loops = self._find_loops(operations_dict)
 
-        pulses: pd.DataFrame = timing_table[timing_table["is_acquisition"] == False].copy()
-        acquisitions: pd.DataFrame = timing_table[timing_table["is_acquisition"] == True].copy()
+        pulses: pd.DataFrame = timing_table[
+            timing_table["is_acquisition"] == False
+        ].copy()
+        acquisitions: pd.DataFrame = timing_table[
+            timing_table["is_acquisition"] == True
+        ].copy()
 
         pulses = self._resolve_loop_pulses(pulses, uncompiled_ops, loops)
 
@@ -496,7 +500,7 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
         try:
             if Instrument.exist(name):
                 Instrument.find_instrument(name).close()
-        except Exception: # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110
             pass
 
         self.cluster: Cluster | None = Cluster(name=name, modules=modules)
@@ -509,7 +513,7 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
         if hasattr(self, "cluster") and self.cluster is not None:
             try:
                 self.cluster.close()
-            except Exception: # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001, S110
                 pass
             self.cluster = None
 
@@ -532,7 +536,6 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
             self.t_max = 500
             self.t_sample = 1
 
-        
         num_points = round(self.t_max / self.t_sample) if self.t_sample > 0 else 500
 
         self.t_list = np.linspace(0, self.t_max * 1e-9, num_points)

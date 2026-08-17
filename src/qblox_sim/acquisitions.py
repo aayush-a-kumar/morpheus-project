@@ -160,6 +160,7 @@ class TraceAcquisitionHandler(AcquisitionHandler):
         res.update(joint_probs)
         return res
 
+
 from typing import ClassVar
 
 
