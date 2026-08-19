@@ -55,6 +55,13 @@ exclude = [
 [tool.pyright]
 pythonVersion = "3.11"
 include = ["src", "tests"]
-exclude = ["notebooks", "examples"]
+exclude = [
+    "**/node_modules",
+    ".conda",
+    "**/__pycache__",
+    "**/.*",
+    "notebooks",
+    "examples"
+]
 reportMissingTypeStubs = false
 reportUnknownMemberType = false
