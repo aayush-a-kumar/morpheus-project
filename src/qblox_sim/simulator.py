@@ -157,6 +157,10 @@ class QbloxQutipSimulator:
         pulses = timing_table[timing_table["is_acquisition"] == False].copy()
         acquisitions = timing_table[timing_table["is_acquisition"] == True].copy()
 
+        # Tell Pyright these are definitely DataFrames
+        assert isinstance(pulses, pd.DataFrame)
+        assert isinstance(acquisitions, pd.DataFrame)
+
         pulses = self._resolve_loop_pulses(pulses, uncompiled_ops, loops)
 
         if loops:
