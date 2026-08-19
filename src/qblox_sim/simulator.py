@@ -203,22 +203,30 @@ class QbloxQutipSimulator:
     def _find_loops(self, operations_dict: dict, offset: float = 0.0) -> list:
         """
         Recursively locates LoopOperation instances to build time-boundary and domain-variable tracking maps.
+        Flags pure statistical loops to bypass iterative ODE integration.
 
         Args:
             operations_dict (dict): Dictionary of operations to scan.
             offset (float, optional): Cumulative time offset in seconds for nested loops. Defaults to 0.0.
 
         Returns:
-            list: List of dictionaries detailing start time, end time, iteration duration, and sweep domains for each loop.
+            list: List of dictionaries detailing start time, end time, iteration duration, sweep domains, and statistical flags for each loop.
         """
         # WHY: Parameter sweeps in schedules wrap repeated pulses in control-flow loops.
         # Finding absolute start and end times for these loops allows the simulator to unroll sweep iterations correctly.
         loops = []
         for op in operations_dict.values():
             if isinstance(op, LoopOperation):
+                # WHY: Extract the control flow metadata which defines how the loop behaves.
                 cf_info = op.data.get("control_flow_info", {})
                 t0 = cf_info.get("t0", 0.0)
                 repetitions = cf_info.get("repetitions", 1)
+                domain = cf_info.get("domain", {})
+
+                # WHY: If a loop has no sweep variables in its domain, it does not alter the Hamiltonian.
+                # We flag this as a pure statistical loop so we can compute the physics once and sample it N times.
+                is_statistical = len(domain) == 0
+
                 # WHY: Calculate total loop duration by multiplying iteration duration by iteration count.
                 duration = repetitions * op.body.duration
                 loops.append(
@@ -227,12 +235,15 @@ class QbloxQutipSimulator:
                         "t_start": offset + t0,
                         "t_end": offset + t0 + duration,
                         "iteration_duration": op.body.duration,
-                        "domain": cf_info.get("domain", {}),
+                        "domain": domain,
+                        "repetitions": repetitions,
+                        "is_statistical": is_statistical,
                     }
                 )
-                # WHY: Recurse into nested loops, adding the current loop's offset to keep time tracking accurate.
-                loops.extend(self._find_loops(op.body.operations, offset + t0))  # type: ignore
+                # WHY: Recurse into nested loops, adding the current loop's offset to keep absolute time tracking accurate.
+                loops.extend(self._find_loops(op.body.operations, offset + t0))  # type: ignore #[cite: 6]
             elif hasattr(op, "operations"):
+                # WHY: Handle standard operation containers that may hold nested loops.
                 t0 = op.data.get("t0", 0.0) if hasattr(op, "data") else 0.0
                 loops.extend(self._find_loops(op.operations, offset + t0))
         return loops
@@ -421,7 +432,7 @@ class QbloxQutipSimulator:
         initial_state: qutip.Qobj | None,
     ) -> dict:
         """
-        Executes parameter sweeps iteration-by-iteration, resetting initial state and stitching output timelines.
+        Executes parameter sweeps iteration-by-iteration, handling statistical sampling bypasses.
 
         Args:
             pulses (pd.DataFrame): Resolved pulse timing table DataFrame.
@@ -433,52 +444,82 @@ class QbloxQutipSimulator:
         Returns:
             dict: Combined result dictionary containing concatenated state histories, time grids, and acquisition results.
         """
-        loop_start = loops[0]["t_start"]
-        loop_duration = loops[0]["iteration_duration"]
-        num_iterations = (
-            loops[0]["op"].data.get("control_flow_info", {}).get("repetitions", 1)
-        )
+        loop = loops[0]
+        loop_start = loop["t_start"]
+        loop_duration = loop["iteration_duration"]
+        repetitions = loop["repetitions"]
+
+        unique_iterations = 1 if loop["is_statistical"] else repetitions
+        shots = repetitions if loop["is_statistical"] else 1
 
         all_results = []
         combined_t_list = []
         combined_states = []
 
-        # WHY: Sweep experiments in quantum hardware run each parameter iteration as an independent "shot".
-        # Simulating each iteration separately ensures state relaxation and time zeroing match real execution behavior.
-        for it in range(num_iterations):
+        for it in range(unique_iterations):
             it_start = loop_start + it * loop_duration
             it_end = loop_start + (it + 1) * loop_duration
 
-            # WHY: Slice pulses active within the current iteration window and shift timing relative to iteration start (t=0).
-            it_pulses = pulses[
-                (pulses["abs_time"] >= it_start - 1e-12)
-                & (pulses["abs_time"] < it_end - 1e-12)
-            ].copy()
-            it_pulses["abs_time"] -= it_start
-
-            it_acq = acquisitions[
-                (acquisitions["abs_time"] >= it_start - 1e-12)
-                & (acquisitions["abs_time"] < it_end - 1e-12)
-            ].copy()
-            if len(it_acq) > 0:
-                it_acq["abs_time"] -= it_start
-
-            # WHY: Run a single-pass simulation window for the current iteration shot.
-            res = self._simulate_processed(
-                it_pulses, it_acq, operations_dict, initial_state=initial_state
+            # WHY: Dynamically resolve the absolute time column because uncompiled schedules or edge cases
+            # might use "t0" or "time" instead of "abs_time".
+            time_col_p = next(
+                (col for col in ["abs_time", "time", "t0"] if col in pulses.columns),
+                "abs_time",
             )
+
+            # WHY: Prevent KeyError by ensuring the DataFrame is not empty and contains the resolved time column.
+            if not pulses.empty and time_col_p in pulses.columns:
+                it_pulses = pulses[
+                    (pulses[time_col_p] >= it_start - 1e-12)
+                    & (pulses[time_col_p] < it_end - 1e-12)
+                ].copy()
+                it_pulses[time_col_p] -= it_start
+            else:
+                it_pulses = pulses.copy()
+
+            time_col_a = next(
+                (
+                    col
+                    for col in ["abs_time", "time", "t0"]
+                    if col in acquisitions.columns
+                ),
+                "abs_time",
+            )
+
+            if not acquisitions.empty and time_col_a in acquisitions.columns:
+                it_acq = acquisitions[
+                    (acquisitions[time_col_a] >= it_start - 1e-12)
+                    & (acquisitions[time_col_a] < it_end - 1e-12)
+                ].copy()
+                it_acq[time_col_a] -= it_start
+            else:
+                it_acq = acquisitions.copy()
+
+            # WHY: Existing test suites mock _simulate_processed using its legacy 4-argument signature.
+            # Unconditionally passing 'shots=shots' triggers an unexpected keyword argument error in test spies.
+            # We omit the keyword entirely when shots == 1 to maintain backward compatibility.
+            # We explicitly type kwargs as dict[str, Any] so Pylance allows mixing Qobj and int values.
+            kwargs: dict[str, typing.Any] = {"initial_state": initial_state}
+            kwargs = {"initial_state": initial_state}
+            if shots > 1:
+                kwargs["shots"] = shots
+
+            res = self._simulate_processed(it_pulses, it_acq, operations_dict, **kwargs)
             all_results.append(res)
 
-            # WHY: Truncate the final time point on non-final iterations to avoid duplicate boundary timestamps when concatenating arrays.
-            is_last = it == num_iterations - 1
+            is_last = it == unique_iterations - 1
             t_slice = res["t_list"] if is_last else res["t_list"][:-1]
             state_slice = res["result"].states if is_last else res["result"].states[:-1]
 
-            # WHY: Add current iteration start time back to t_slice so the stitched time grid increases monotonically across iterations.
             combined_t_list.append(t_slice + it_start)
             combined_states.extend(state_slice)
 
-        final_t_list = np.concatenate(combined_t_list)
+        # WHY: Guard against ValueError/TypeError if the grid extraction yielded zero iterations
+        # (e.g., completely empty schedule), leaving combined_t_list empty.
+        final_t_list = (
+            np.concatenate(combined_t_list) if combined_t_list else np.array([])
+        )
+
         result_container = SimulationResult(
             combined_states,
             final_t_list,
@@ -493,23 +534,33 @@ class QbloxQutipSimulator:
         }
 
     def _simulate_processed(
-        self, pulses, acquisitions, operations_dict=None, initial_state=None
-    ):
+        self,
+        pulses: pd.DataFrame,
+        acquisitions: pd.DataFrame,
+        operations_dict: dict | None = None,
+        initial_state: qutip.Qobj | None = None,
+        shots: int = 1,
+    ) -> dict:
         """
-        Executes a continuous time-domain simulation for a single shot window.
+        Executes a continuous time-domain simulation by chunking the schedule into active and idle intervals.
 
         Args:
-            pulses (pd.DataFrame): Pulse timing table DataFrame for the shot window.
-            acquisitions (pd.DataFrame): Acquisition timing table DataFrame for the shot window.
+            pulses (pd.DataFrame): Pulse timing table DataFrame for the window.
+            acquisitions (pd.DataFrame): Acquisition timing table DataFrame for the window.
             operations_dict (dict | None, optional): Operations dictionary map. Defaults to None.
             initial_state (qutip.Qobj | None, optional): Initial state vector or density matrix. Defaults to None.
+            shots (int, optional): The number of statistical shots to generate for measurements. Defaults to 1.
 
         Returns:
             dict: Result dictionary containing SimulationResult container, continuous time array, and measurements list.
         """
         operations_dict = operations_dict or {}
+        # Original: pulses_list = pulses.to_dict("records")
+        # FIX: Cast the Pandas output to explicitly satisfy Pylance
+        pulses_list = typing.cast(
+            list[dict[str, typing.Any]], pulses.to_dict("records")
+        )
 
-        pulses_list = pulses.to_dict("records")
         # WHY: Hardware compilers can output timing in nanoseconds if values exceed 1e-3.
         # We explicitly convert values > 1e-3 to standard SI seconds (1e-9 s) for physics solver calculations.
         for p in pulses_list:
@@ -520,11 +571,13 @@ class QbloxQutipSimulator:
                 p["duration"] * 1e-9 if p["duration"] > 1e-3 else p["duration"]
             )
 
+        # WHY: Determine the absolute end time of the simulation to bounds the continuous time grid.
         if len(pulses_list) == 0:
             total_duration = 1e-6
         else:
             total_duration = max(p["abs_time"] + p["duration"] for p in pulses_list)
 
+        # WHY: Account for trailing acquisition windows that extend past the final microwave pulse.
         if len(acquisitions) > 0:
             acq_max = float(acquisitions["abs_time"].max() or 0.0) + float(
                 acquisitions["duration"].max() or 0.0
@@ -532,32 +585,89 @@ class QbloxQutipSimulator:
             acq_max = acq_max * 1e-9 if acq_max > 1e-3 else acq_max
             total_duration = max(total_duration, acq_max)
 
-        # 3. Create a STRICTLY UNIFORM time grid (Configurable resolution)
         # WHY: QuTiP solvers require a strictly monotonic, uniformly spaced time grid.
         # Fixed step size dt guarantees predictable numerical stability during matrix exponential integration.
         step_size = self.cfg.dt
         num_points = max(1000, int(np.ceil(total_duration / step_size)) + 1)
         t_list = np.linspace(0, total_duration, num_points)
 
+        # --- EVENT CHUNKING LOGIC ---
+
+        # WHY: Extract the absolute float intervals for every physical event in the schedule.
+        intervals = []
+        for p in pulses_list:
+            intervals.append((p["abs_time"], p["abs_time"] + p["duration"]))
+
+        for _, acq in acquisitions.iterrows():
+            acq_time = (
+                acq["abs_time"] * 1e-9 if acq["abs_time"] > 1e-3 else acq["abs_time"]
+            )
+            dur = float(acq.get("duration") or 1e-6)
+            dur = dur * 1e-9 if dur > 1e-3 else dur
+            intervals.append((acq_time, acq_time + dur))
+
+        # WHY: Sort chronologically to prepare for overlapping overlap resolution.
+        intervals.sort(key=lambda x: x[0])
+
+        # WHY: Merge intervals that overlap or touch to find the minimal set of contiguous active windows.
+        # We immediately map these to integer indices based on the 1 ns dt to align precisely with the global t_list.
+        merged_indices = []
+        curr_start, curr_end = -1, -1
+
+        for start, end in intervals:
+            start_idx = int(np.round(start / step_size))
+            end_idx = int(np.round(end / step_size))
+
+            if curr_start == -1:
+                curr_start, curr_end = start_idx, end_idx
+            elif start_idx <= curr_end:
+                # WHY: Extend the current active window if the new event overlaps.
+                curr_end = max(curr_end, end_idx)
+            else:
+                # WHY: A gap was found, finalize the previous active window and start a new one.
+                merged_indices.append((curr_start, curr_end))
+                curr_start, curr_end = start_idx, end_idx
+
+        if curr_start != -1:
+            merged_indices.append((curr_start, curr_end))
+
+        # WHY: Translate the merged active indices into an execution plan (chunks) for the engine,
+        # explicitly defining the idle gaps between the active blocks.
+        chunks = []
+        last_idx = 0
+        for start_idx, end_idx in merged_indices:
+            if start_idx > last_idx:
+                chunks.append(("idle", last_idx, start_idx))
+            chunks.append(("active", start_idx, end_idx))
+            last_idx = end_idx
+
+        # WHY: Close out the timeline with a final idle block if the schedule goes quiet before total_duration.
+        if last_idx < len(t_list) - 1:
+            chunks.append(("idle", last_idx, len(t_list) - 1))
+
+        # --- EXECUTION ---
+
+        # WHY: Convert discrete schedule pulse dictionaries into continuous IQ drive envelopes.
+        signal_provider = ScheduleSignalProvider(pulses_list)
+        drives = signal_provider.get_drives(t_list)
+
         # WHY: Default to pure ground state |00..0> if no custom initial state is supplied.
         if initial_state is None:
             initial_state = self.system.get_default_initial_state()
 
-        # WHY: Convert discrete schedule pulse dictionaries into continuous IQ drive envelopes mapped to hardware ports.
-        signal_provider = ScheduleSignalProvider(pulses_list)
-        drives = signal_provider.get_drives(t_list)
-
-        # WHY: Execute Lindblad Master Equation evolution using QuTiPEngine.
+        # WHY: Execute the chunked evolution plan via the engine.
+        # The engine will use mesolve for active chunks and fast analytical jumps for idle chunks.
         result = self.engine.run(
             system=self.system,
             drives=drives,
             t_list=t_list,
             initial_state=initial_state,
+            chunks=chunks,  # NEW PARAMETER
         )
 
-        # WHY: Process acquisitions against computed quantum states at trigger start times.
+        # WHY: Process acquisitions against computed quantum states, generating N statistical shots instantly.
         measurements = self._process_acquisitions(
-            acquisitions, result.states, t_list, operations_dict
+            acquisitions, result.states, t_list, operations_dict, shots=shots
         )
 
         result_container = SimulationResult(
@@ -579,6 +689,7 @@ class QbloxQutipSimulator:
         states: list,
         t_list: np.ndarray,
         operations_dict: dict,
+        shots: int = 1,
     ) -> list:
         """
         Processes acquisition timing table rows by passing corresponding states to registered strategy handlers.
@@ -588,12 +699,14 @@ class QbloxQutipSimulator:
             states (list): Time-evolved quantum state history list.
             t_list (np.ndarray): Continuous simulation time grid array.
             operations_dict (dict): Flat operations dictionary.
+            shots (int, optional): The number of independent samples to generate. Defaults to 1.
 
         Returns:
             list: List of processed acquisition dictionaries containing demodulated IQ voltages, trace data, or bit outcomes.
         """
         measurements = []
         for _, acq in acquisitions.iterrows():
+            # WHY: Format acquisition absolute time and duration to SI seconds.
             acq_time = acq["abs_time"]
             acq_time = acq_time * 1e-9 if acq_time > 1e-3 else acq_time
             acq_duration = float(acq.get("duration") or 1e-6)
@@ -614,13 +727,15 @@ class QbloxQutipSimulator:
                 else {}
             )
 
+            # WHY: Inject the dynamically calculated statistical repetition count into the info map
+            # so handlers like SSBIntegrationHandler can sample N times instantly.
+            acq_info["shots"] = shots
+
             # WHY: Extract protocol string, defaulting to SSBIntegrationComplex if unspecified.
             protocol = acq_info.get(
                 "protocol",
                 acq.get("acq_protocol", acq.get("protocol", "SSBIntegrationComplex")),
             )
-            # FIX: casting protocol to string to avoid issues with float('nan') or None
-            # WHY: Pandas NaN floats cause dictionary key failures in AcquisitionRegistry; casting guarantees string lookups.
             protocol = (
                 str(protocol)
                 if protocol is not None
@@ -628,30 +743,28 @@ class QbloxQutipSimulator:
                 else "SSBIntegrationComplex"
             )
 
-            # WHY: Find the nearest index in t_list corresponding to the acquisition start time.
+            # WHY: Find the nearest index in t_list corresponding to the acquisition start time to pull the correct state matrix.
             idx = np.argmin(np.abs(t_list - acq_time))
             state = states[idx]
 
             acq_channel = acq_info.get(
                 "acq_channel", acq.get("acq_channel", acq.get("acq_index", "acq"))
             )
-            # WHY: Channel names formatted like 'q0:res' are split to identify the target resonator ('q0').
             res_name = (
                 str(acq_channel).split(":")[0]
                 if isinstance(acq_channel, str) and ":" in acq_channel
                 else "q0"
             )
 
-            # PYLANCE TYPE FIX: Explicitly fallback to guarantee a valid Qobj
-            # WHY: Ensures valid resonator operators are passed to acquisition handlers even if channel keys mismatch.
+            # WHY: Ensure valid resonator operators are passed to acquisition handlers even if channel keys mismatch.
             a_op = self.system.a.get(res_name)
             ad_op = self.system.ad.get(res_name)
             if a_op is None or ad_op is None:
                 a_op = self.system.a["q0"]
                 ad_op = self.system.ad["q0"]
 
-            # WHY: Lookup strategy handler in AcquisitionRegistry and execute state projection.
-            handler = AcquisitionRegistry.get_handler(protocol)
+            # WHY: Lookup strategy handler in AcquisitionRegistry and execute state projection with vectorization support.
+            handler = AcquisitionRegistry.get_handler(protocol)  # [cite: 1]
             processed_data = handler.process(
                 state=state,
                 t_list=t_list,

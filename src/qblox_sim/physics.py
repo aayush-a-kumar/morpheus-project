@@ -10,6 +10,7 @@ and assembling the un-driven (static) Hamiltonian and Lindblad collapse operator
 
 import numpy as np
 import qutip
+import scipy.linalg
 
 from qblox_sim.config import SimulationConfig
 
@@ -103,6 +104,41 @@ class QuantumSystem:
                 self.a[name] = global_op
                 self.ad[name] = global_op.dag()
                 self.n[name] = self.ad[name] * self.a[name]  # type: ignore[operator]
+        # WHY: Cache the static Hamiltonian to avoid rebuilding it during integration.
+        self.h_static = self.build_static_hamiltonian()
+
+        # --- Spectral & Decay Pre-calculations ---
+        # WHY: Evaluate spectral decomposition once at setup so engine.py can
+        # perform O(1) unitary leaps over idle time gaps.
+        h_static_dense = self.h_static.full()
+
+        # Guard against completely empty topologies breaking eigh
+        if h_static_dense.shape == (1, 1) and np.all(h_static_dense == 0):
+            self.eigenvalues = np.array([0.0])
+            self.eigenvectors = np.array([[1.0]])
+        else:
+            self.eigenvalues, self.eigenvectors = scipy.linalg.eigh(h_static_dense)
+
+        self.v_dag = self.eigenvectors.conj().T
+
+        # WHY: Pre-calculate the energy differences (E_j - E_k) for the phase rotation matrix.
+        self.delta_e = self.eigenvalues[:, None] - self.eigenvalues[None, :]
+
+        # WHY: Construct the global Lie-Trotter decay rate matrix.
+        # This applies phenomenological T1/T2 damping across the system off-diagonals.
+        dim = h_static_dense.shape[0]
+        self.decay_rate_matrix = np.zeros((dim, dim))
+
+        total_gamma = 0.0
+        for q_cfg in self.cfg.qubits.values():
+            if q_cfg.T1 < np.inf:
+                total_gamma += 1.0 / q_cfg.T1
+            if q_cfg.T2 < np.inf:
+                total_gamma += 1.0 / q_cfg.T2
+
+        # Apply total gamma damping strictly to the off-diagonal elements
+        mask = ~np.eye(dim, dtype=bool)
+        self.decay_rate_matrix[mask] = total_gamma / 2.0
 
     def get_default_initial_state(self) -> qutip.Qobj:
         """
@@ -112,6 +148,11 @@ class QuantumSystem:
             qutip.Qobj: A tensor product representing the pure ground state of the system.
         """
         state_list = [qutip.basis(d, 0) for d in self.dims]
+
+        # WHY: If the SimulationConfig contains no qubits or resonators, state_list is empty.
+        # qutip.tensor(*[]) raises a TypeError, so we fallback to a safe 1D scalar ground state.
+        if not state_list:
+            return qutip.basis(1, 0)
         return qutip.tensor(*state_list)
 
     def build_static_hamiltonian(self) -> qutip.Qobj:

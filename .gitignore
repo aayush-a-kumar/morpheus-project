@@ -12,6 +12,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+filetree.txt
+temp_scripts/
 
 # macOS system files
 .DS_Store

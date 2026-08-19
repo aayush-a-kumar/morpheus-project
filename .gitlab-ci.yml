@@ -83,4 +83,4 @@ pytest:
       junit: report.xml
       coverage_report:
         coverage_format: cobertura
-        path: coverage${PYTHON_VERSION}.xml
+        path: coverage${PYTHON_VERSION}.xm

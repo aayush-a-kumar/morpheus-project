@@ -11,7 +11,7 @@ time-domain traces.
 
 import itertools
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import qutip
@@ -44,7 +44,7 @@ class AcquisitionHandler(ABC):
             states (list[qutip.Qobj]): The full history of QuTiP states over time.
             acq_time (float): The absolute start time of the acquisition.
             acq_duration (float): The length of the integration or trace window.
-            acq_info (dict[str, Any]): Dictionary of schedule parameters (e.g., rotation, threshold).
+            acq_info (dict[str, Any]): Dictionary of schedule parameters (e.g., rotation, threshold, shots).
             cfg (SimulationConfig): The static simulation hardware configuration.
             a_op (qutip.Qobj): The annihilation operator for the relevant readout resonator.
             ad_op (qutip.Qobj): The creation operator for the relevant readout resonator.
@@ -114,29 +114,69 @@ class SSBIntegrationHandler(AcquisitionHandler):
     """Projects ground/excited probabilities onto complex voltage centroids with noise."""
 
     def process(
-        self, state, t_list, states, acq_time, acq_duration, acq_info, cfg, a_op, ad_op
-    ):
+        self,
+        state: qutip.Qobj,
+        t_list: np.ndarray,
+        states: list[qutip.Qobj],
+        acq_time: float,
+        acq_duration: float,
+        acq_info: dict[str, Any],
+        cfg: SimulationConfig,
+        a_op: qutip.Qobj,
+        ad_op: qutip.Qobj,
+    ) -> dict[str, Any]:
+        """
+        Maps probabilities to complex I/Q points using single sideband integration.
+
+        Args:
+            state (qutip.Qobj): The QuTiP state at trigger time.
+            t_list (np.ndarray): The simulation time grid.
+            states (list[qutip.Qobj]): The full state history.
+            acq_time (float): The absolute start time of the acquisition.
+            acq_duration (float): The length of the integration window.
+            acq_info (dict[str, Any]): Dictionary of schedule parameters.
+            cfg (SimulationConfig): The static simulation hardware configuration.
+            a_op (qutip.Qobj): The annihilation operator for the readout resonator.
+            ad_op (qutip.Qobj): The creation operator for the readout resonator.
+
+        Returns:
+            dict[str, Any]: Measurement dictionary containing I, Q, and binary outcome data.
+        """
         joint_probs = self._get_joint_probabilities(state, cfg)
         p0 = joint_probs["prob_0"]
         p1 = joint_probs["prob_1"]
+
+        # WHY: Extract the shots parameter dynamically injected by the simulator.
+        # Defaults to 1 to maintain backward compatibility with standard single-shot workflows.
+        shots = acq_info.get("shots", 1)
 
         # WHY: Single Sideband (SSB) Integration emulates the hardware demodulation.
         # The resulting complex voltage is a weighted average of the pre-calibrated
         # ground and excited state centroids in the IQ plane.
         centroid = p0 * cfg.acquisition.v_0 + p1 * cfg.acquisition.v_1
 
-        # WHY: Add Gaussian noise to simulate thermal and amplifier noise in the readout chain.
-        i_val = float(
-            np.real(centroid) + np.random.normal(0, cfg.acquisition.noise_sigma)
+        # WHY: Vectorize Gaussian noise generation. Instantly creates an array of N noisy samples.
+        i_val = np.real(centroid) + np.random.normal(
+            0, cfg.acquisition.noise_sigma, size=shots
         )
-        q_val = float(
-            np.imag(centroid) + np.random.normal(0, cfg.acquisition.noise_sigma)
+        q_val = np.imag(centroid) + np.random.normal(
+            0, cfg.acquisition.noise_sigma, size=shots
         )
         val = i_val + 1j * q_val
 
-        # WHY: Generate a discrete measurement outcome by collapsing the state
-        # based on the calculated marginal probability of being in |1>.
-        outcome = 1 if np.random.random() < p1 else 0
+        # WHY: Use a binomial distribution to instantly sample N discrete quantum projection
+        # outcomes based on the marginal probability of being in |1>.
+        outcome = np.random.binomial(1, p1, size=shots)
+
+        # WHY: If only a single shot was requested, unbox the arrays back to pure scalar floats/ints
+        # so downstream processing functions don't unexpectedly encounter NumPy arrays.
+        if shots == 1:
+            i_val, q_val, val, outcome = (
+                float(i_val[0]),
+                float(q_val[0]),
+                val[0],
+                int(outcome[0]),
+            )
 
         res = {"outcome": outcome, "I": i_val, "Q": q_val, "value": val}
         res.update(joint_probs)
@@ -147,8 +187,34 @@ class ThresholdedAcquisitionHandler(SSBIntegrationHandler):
     """State discrimination mapping to a discrete outcome based on rotation and threshold."""
 
     def process(
-        self, state, t_list, states, acq_time, acq_duration, acq_info, cfg, a_op, ad_op
-    ):
+        self,
+        state: qutip.Qobj,
+        t_list: np.ndarray,
+        states: list[qutip.Qobj],
+        acq_time: float,
+        acq_duration: float,
+        acq_info: dict[str, Any],
+        cfg: SimulationConfig,
+        a_op: qutip.Qobj,
+        ad_op: qutip.Qobj,
+    ) -> dict[str, Any]:
+        """
+        Applies a rotation and real-axis threshold to digitize the measurement.
+
+        Args:
+            state (qutip.Qobj): The QuTiP state at trigger time.
+            t_list (np.ndarray): The simulation time grid.
+            states (list[qutip.Qobj]): The full state history.
+            acq_time (float): The absolute start time of the acquisition.
+            acq_duration (float): The length of the integration window.
+            acq_info (dict[str, Any]): Dictionary containing acq_rotation and acq_threshold.
+            cfg (SimulationConfig): The static simulation hardware configuration.
+            a_op (qutip.Qobj): The annihilation operator for the readout resonator.
+            ad_op (qutip.Qobj): The creation operator for the readout resonator.
+
+        Returns:
+            dict[str, Any]: Measurement dictionary with updated digitized outcome and value.
+        """
         base_result = super().process(
             state, t_list, states, acq_time, acq_duration, acq_info, cfg, a_op, ad_op
         )
@@ -166,8 +232,16 @@ class ThresholdedAcquisitionHandler(SSBIntegrationHandler):
             rot_rad = np.deg2rad(acq_rotation)
             val_rot = base_result["value"] * np.exp(1j * rot_rad)
 
-            # WHY: A hard threshold is applied to the rotated Real axis to digitize the state.
-            base_result["outcome"] = 1 if np.real(val_rot) > acq_threshold else 0
+            # WHY: Vectorized boolean thresholding works natively whether val_rot is a scalar
+            # or a NumPy array representing thousands of shots.
+            outcome_array = np.real(val_rot) > acq_threshold
+
+            # WHY: Safely cast the resulting boolean back to an integer type matching the input structure.
+            if isinstance(outcome_array, np.ndarray):
+                base_result["outcome"] = outcome_array.astype(int)
+            else:
+                base_result["outcome"] = int(outcome_array)
+
             base_result["value"] = base_result["outcome"]
         else:
             base_result["value"] = base_result["outcome"]
@@ -179,9 +253,38 @@ class TraceAcquisitionHandler(AcquisitionHandler):
     """Time of Flight (TOF) digitized time-series voltage wave <a(t) + a^dagger(t)>."""
 
     def process(
-        self, state, t_list, states, acq_time, acq_duration, acq_info, cfg, a_op, ad_op
-    ):
+        self,
+        state: qutip.Qobj,
+        t_list: np.ndarray,
+        states: list[qutip.Qobj],
+        acq_time: float,
+        acq_duration: float,
+        acq_info: dict[str, Any],
+        cfg: SimulationConfig,
+        a_op: qutip.Qobj,
+        ad_op: qutip.Qobj,
+    ) -> dict[str, Any]:
+        """
+        Extracts a continuous 1 GSPS time-series trace representing the resonator displacement.
+
+        Args:
+            state (qutip.Qobj): The QuTiP state at trigger time.
+            t_list (np.ndarray): The simulation time grid.
+            states (list[qutip.Qobj]): The full state history.
+            acq_time (float): The absolute start time of the acquisition.
+            acq_duration (float): The length of the trace window.
+            acq_info (dict[str, Any]): Dictionary containing acq_delay and shots.
+            cfg (SimulationConfig): The static simulation hardware configuration.
+            a_op (qutip.Qobj): The annihilation operator for the readout resonator.
+            ad_op (qutip.Qobj): The creation operator for the readout resonator.
+
+        Returns:
+            dict[str, Any]: Measurement dictionary containing the continuous TOF trace array.
+        """
         joint_probs = self._get_joint_probabilities(state, cfg)
+
+        # WHY: Extract shots parameter for multi-trace generation.
+        shots = acq_info.get("shots", 1)
 
         # WHY: Cable delay shifts the window where the hardware digitizes the returning pulse.
         acq_delay = acq_info.get("acq_delay", cfg.acquisition.cable_delay)
@@ -197,28 +300,32 @@ class TraceAcquisitionHandler(AcquisitionHandler):
             # WHY: The continuous voltage trace is proportional to the expectation value
             # of the cavity field displacement <a + a^dagger>.
             exp_val = float(np.real(qutip.expect(a_op + ad_op, state)))
-            trace_data = exp_val + np.random.normal(0, sigma, size=num_samples)
+
+            # WHY: Generate a 2D array matrix of traces (shape: shots x num_samples).
+            trace_data = exp_val + np.random.normal(0, sigma, size=(shots, num_samples))
         else:
-            # WHY: Reconstruct the continuous Time of Flight (TOF) measurement record
-            # by evaluating the cavity field at each time step in the acquisition window.
-            trace_data = np.array(
-                [
-                    float(np.real(qutip.expect(a_op + ad_op, states[i])))
-                    + np.random.normal(0, sigma)
-                    for i in indices
-                ]
+            # WHY: Reconstruct the continuous TOF measurement record by evaluating
+            # the cavity field at each time step strictly bounded by the acquisition window.
+            base_trace = np.array(
+                [float(np.real(qutip.expect(a_op + ad_op, states[i]))) for i in indices]
             )
+            # WHY: Use broadcasting to apply independent noise across every sample for every shot.
+            noise = np.random.normal(0, sigma, size=(shots, len(indices)))
+            trace_data = base_trace + noise
 
         p1 = joint_probs["prob_1"]
-        outcome = 1 if np.random.random() < p1 else 0
-        i_val = float(np.mean(trace_data)) if len(trace_data) > 0 else 0.0
+        outcome = np.random.binomial(1, p1, size=shots)
+
+        # WHY: Reduce the 2D trace data along the sample axis (axis=-1) to compute the integrated I-value per shot.
+        i_val = np.mean(trace_data, axis=-1) if trace_data.size > 0 else np.zeros(shots)
+
+        # WHY: Unbox data objects if only evaluating a single timeline.
+        if shots == 1:
+            outcome, i_val, trace_data = int(outcome[0]), float(i_val[0]), trace_data[0]
 
         res = {"outcome": outcome, "I": i_val, "Q": 0.0, "value": trace_data}
         res.update(joint_probs)
         return res
-
-
-from typing import ClassVar
 
 
 class AcquisitionRegistry:

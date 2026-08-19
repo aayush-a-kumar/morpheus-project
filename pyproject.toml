@@ -50,7 +50,8 @@ exclude = [
     "examples",
     ".venv",
     "build",
-    "dist"
+    "dist",
+    "temp_scripts"
 ]
 
 [tool.pyright]
