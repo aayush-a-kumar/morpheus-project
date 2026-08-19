@@ -19,6 +19,7 @@ dependencies = [
     "scipy",
     "pandas",
     "matplotlib",
+    "qcodes < 0.38.0",
 ]
 
 [project.optional-dependencies]

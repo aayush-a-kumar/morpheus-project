@@ -19,6 +19,7 @@ default:
       - .cache/pip
     policy: pull-push
   before_script:
+    - apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0
     - uv --version
     - uv venv
     - . .venv/bin/activate
@@ -68,6 +69,7 @@ pytest:
       - PYTHON_VERSION: ["3.11"]
   variables:
     PYTHON_VERSION: ${PYTHON_VERSION}
+    QT_QPA_PLATFORM: "offscreen"
   script:
     # Target the src/qblox_sim directory for coverage
     - pytest -v -s --junitxml=report.xml --cov=src/qblox_sim --cov-report term --cov-report xml:coverage${PYTHON_VERSION}.xml --color=yes tests/
