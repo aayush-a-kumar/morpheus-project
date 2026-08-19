@@ -1,0 +1,29 @@
+Copyright (c) 2026 Qblox B.V.
+All rights reserved.
+
+This software and associated documentation files (the "Software") are the proprietary and confidential property of Qblox B.V.,
+Delftechpark 22, 2628 XH Delft, The Netherlands (https://qblox.com/).
+
+Permission is hereby granted to employees and contractors of Qblox B.V. to use, copy, modify,
+and distribute the Software solely for internal business purposes within Qblox B.V., subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+2. The Software may not be sublicensed, sold, rented, leased, transferred, assigned, distributed, or otherwise disposed of,
+   in whole or in part, to any third party without the prior written consent of Qblox B.V.
+
+3. Redistributions in source or binary form, which are strictly limited to internal use within Qblox B.V.,
+   must reproduce the above copyright notice, this list of conditions, and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+4. The Software contains confidential and proprietary information of Qblox B.V. Authorized users shall maintain the
+   Software in strict confidence and shall not disclose it to any unauthorized person or entity.
+
+5. Upon termination of employment or contract with Qblox B.V., or upon direct company request,
+   all copies of the Software in the possession of the employee or contractor must be immediately returned to Qblox B.V. or
+   permanently destroyed.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL QBLOX B.V., ITS
+EMPLOYEES, OR CONTRACTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT,
+OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

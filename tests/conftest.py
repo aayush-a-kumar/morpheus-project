@@ -1,4 +1,7 @@
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 import pytest
+
 
 @pytest.fixture
 def default_qubit_params():

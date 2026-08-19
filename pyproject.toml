@@ -3,6 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+license = "LicenseRef-Qblox"
+license-files = ["LICENSES/*.txt"]
 name = "qblox-sim"
 version = "0.1.0"
 description = "Simulation utilities for Qblox Scheduler using QuTiP"
@@ -17,14 +19,50 @@ dependencies = [
     "scipy",
     "pandas",
     "matplotlib",
+    "qcodes < 0.38.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "jupyter",
     "ipykernel",
+    "ruff",
+    "pyright",
+    "typos",
+    "vulture",
+    "mdformat",
+    "commitizen"
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+exclude = [
+    "notebooks",
+    "examples",
+    ".venv",
+    "build",
+    "dist"
+]
+
+[tool.pyright]
+pythonVersion = "3.11"
+include = ["src", "tests"]
+exclude = [
+    "**/node_modules",
+    ".conda",
+    "**/__pycache__",
+    "**/.*",
+    "notebooks",
+    "examples"
+]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
