@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 import qutip
 from qblox_scheduler import Schedule
 from qblox_scheduler.operations import SquarePulse

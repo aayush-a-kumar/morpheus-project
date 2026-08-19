@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 from qblox_sim.config import (
     CouplingConfig,
     QubitConfig,

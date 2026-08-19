@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 import typing
 
 import numpy as np
@@ -99,7 +100,7 @@ class QbloxQutipSimulator:
     def _get_compiled_schedule(self, schedule: Schedule) -> tuple[pd.DataFrame, dict]:
         try:
             return schedule.timing_table.data, schedule.operations  # type: ignore
-        except (AttributeError, KeyError):
+        except (AttributeError, KeyError, ValueError):
             device = QuantumDevice(name="dummy_device")
             try:
                 q0 = BasicTransmonElement("q0")  # type: ignore
@@ -153,12 +154,8 @@ class QbloxQutipSimulator:
         timing_table, operations_dict = self._get_compiled_schedule(schedule)
         loops = self._find_loops(operations_dict)
 
-        pulses: pd.DataFrame = timing_table[
-            timing_table["is_acquisition"] == False
-        ].copy()
-        acquisitions: pd.DataFrame = timing_table[
-            timing_table["is_acquisition"] == True
-        ].copy()
+        pulses = timing_table[timing_table["is_acquisition"] == False].copy()
+        acquisitions = timing_table[timing_table["is_acquisition"] == True].copy()
 
         pulses = self._resolve_loop_pulses(pulses, uncompiled_ops, loops)
 
@@ -343,7 +340,9 @@ class QbloxQutipSimulator:
             total_duration = max(p["abs_time"] + p["duration"] for p in pulses_list)
 
         if len(acquisitions) > 0:
-            acq_max = acquisitions["abs_time"].max() + acquisitions["duration"].max()
+            acq_max = float(acquisitions["abs_time"].max() or 0.0) + float(
+                acquisitions["duration"].max() or 0.0
+            )
             acq_max = acq_max * 1e-9 if acq_max > 1e-3 else acq_max
             total_duration = max(total_duration, acq_max)
 
@@ -394,7 +393,7 @@ class QbloxQutipSimulator:
         for _, acq in acquisitions.iterrows():
             acq_time = acq["abs_time"]
             acq_time = acq_time * 1e-9 if acq_time > 1e-3 else acq_time
-            acq_duration = acq.get("duration", 1e-6)
+            acq_duration = float(acq.get("duration") or 1e-6)
             acq_duration = acq_duration * 1e-9 if acq_duration > 1e-3 else acq_duration
 
             op_hash = acq.get("operation_hash", None)
@@ -520,7 +519,7 @@ class QbloxQ1Simulator(QbloxQutipSimulator):
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         self.close()
 
     def simulate(

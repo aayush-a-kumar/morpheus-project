@@ -3,6 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+license = "LicenseRef-Qblox"
+license-files = ["LICENSES/*.txt"]
 name = "qblox-sim"
 version = "0.1.0"
 description = "Simulation utilities for Qblox Scheduler using QuTiP"
@@ -41,7 +43,7 @@ pythonpath = ["src"]
 where = ["src"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 exclude = [
     "notebooks",
     "examples",
@@ -51,7 +53,7 @@ exclude = [
 ]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 include = ["src", "tests"]
 exclude = ["notebooks", "examples"]
 reportMissingTypeStubs = false

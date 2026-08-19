@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 import itertools
 from abc import ABC, abstractmethod
 from typing import Any
@@ -50,7 +51,7 @@ class AcquisitionHandler(ABC):
 
             # Construct tensor product basis state |b0, b1, ..., bN-1>
             basis_kets = [qutip.basis(q_dims[i], bits[i]) for i in range(n_qubits)]
-            ket = qutip.tensor(basis_kets)
+            ket = qutip.tensor(*basis_kets)
 
             p_bit = float(np.real(qutip.expect(qutip.ket2dm(ket), rho_q)))
             results[f"prob_{bitstring}"] = p_bit

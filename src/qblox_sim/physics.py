@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 
 import numpy as np
 import qutip

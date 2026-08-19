@@ -1,0 +1,16 @@
+[default.extend-words]
+ket = "ket"
+arange = "arange"
+interm = "interm"
+IY = "IY"
+IZ = "IZ"
+ba = "ba"
+ede = "ede"
+magent = "magent"
+mis = "mis"
+merrors = "merrors"
+mport = "mport"
+precess = "precess"
+
+[files]
+extend-exclude = ["**/*.ipynb", "**/*.json"]

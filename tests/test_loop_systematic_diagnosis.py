@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
+# SPDX-License-Identifier: LicenseRef-Qblox
 import numpy as np
 import pandas as pd
 import qutip
@@ -88,6 +89,8 @@ def test_systematic_loop_diagnosis(default_qubit_params):
         provider = ScheduleSignalProvider([p_info])
         drives = provider.get_drives(sampled_times)
         sampled_envs = drives.get("q0:mw", np.zeros_like(sampled_times))
+
+        assert sampled_envs is not None, "sampled_envs cannot be None"  # quick fix
 
         if len(sampled_envs) > 0:
             max_env = np.max(np.abs(sampled_envs))
