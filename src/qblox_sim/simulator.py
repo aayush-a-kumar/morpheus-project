@@ -759,9 +759,17 @@ class QbloxQutipSimulator:
             # WHY: Ensure valid resonator operators are passed to acquisition handlers even if channel keys mismatch.
             a_op = self.system.a.get(res_name)
             ad_op = self.system.ad.get(res_name)
+
             if a_op is None or ad_op is None:
-                a_op = self.system.a["q0"]
-                ad_op = self.system.ad["q0"]
+                # Fail cleanly if the universe is completely empty
+                if not self.system.a:
+                    raise ValueError(
+                        "Cannot process acquisitions: No resonators are defined in the SimulationConfig."
+                    )
+                # Fallback to the first available resonator instead of hardcoding "q0"
+                fallback_res = next(iter(self.system.a))
+                a_op = self.system.a[fallback_res]
+                ad_op = self.system.ad[fallback_res]
 
             # WHY: Lookup strategy handler in AcquisitionRegistry and execute state projection with vectorization support.
             handler = AcquisitionRegistry.get_handler(protocol)  # [cite: 1]

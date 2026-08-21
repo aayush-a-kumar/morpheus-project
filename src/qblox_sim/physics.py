@@ -162,6 +162,10 @@ class QuantumSystem:
         Returns:
             qutip.Qobj: The static Hamiltonian (H0) matrix.
         """
+        # WHY: Guard against empty topologies causing qutip.tensor(*[]) to crash.
+        if not self.dims:
+            return qutip.qzero(1)
+
         H = qutip.tensor(*[qutip.qzero(d) for d in self.dims])
 
         for q_name, q_cfg in self.cfg.qubits.items():

@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 import qutip
-import scipy.linalg
 
 from qblox_sim.physics import QuantumSystem
 
@@ -47,12 +46,11 @@ class QuTiPEngine:
         # WHY: QuTiP 5 mesolve accepts a standard dictionary for options.
         solver_options = options or {"nsteps": 500000}
 
-        # WHY: QuTiP 5's qutip.Result() strictly expects specific keys in the options map.
-        # We explicitly define them to prevent KeyError during the final stitching step.
-        # result_options = {
-        #     "store_states": solver_options.get("store_states", True),
-        #     "store_final_state": solver_options.get("store_final_state", False),
-        # }
+        # WHY: Bridge compatibility between QuTiP 4.7 and 5.x.
+        # QuTiP 5 strictly expects 'store_states' to exist during Result instantiation.
+        result_options = solver_options.copy()
+        result_options.setdefault("store_states", True)
+        result_options.setdefault("store_final_state", False)
 
         c_ops = system.build_collapse_operators()
 
@@ -63,10 +61,9 @@ class QuTiPEngine:
         global_states = []
         current_state = initial_state
 
-        # WHY: Pre-diagonalize the static Hamiltonian once to enable O(1) unitary leaps during idle gaps.
-        # We extract the dense matrix representation because scipy.linalg.eigh is highly optimized for Hermitian matrices.
-        h_static_dense = system.build_static_hamiltonian().full()
-        eigenvalues, eigenvectors = scipy.linalg.eigh(h_static_dense)
+        # WHY: Retrieve pre-diagonalized static Hamiltonian data from the physics cache.
+        eigenvalues = system.eigenvalues
+        eigenvectors = system.eigenvectors
 
         for chunk_type, start_idx, end_idx in chunks:
             # WHY: Slice the time grid for the current execution block to maintain timeline alignment.
@@ -99,12 +96,10 @@ class QuTiPEngine:
                 current_state = idle_states[-1]
 
         # WHY: Package the stitched states back into a standard QuTiP Result object.
-        # Your test suite requires e_ops and options to be passed during instantiation.
-        # Because Pylance uses QuTiP 5 stubs (which expect a 'ResultOptions' object),
-        # we cast the dictionary to Any to silence the strict type checker while
-        # perfectly preserving the QuTiP 4.7 dictionary runtime behavior.
+        # We pass result_options to satisfy QuTiP 5's strict initialization checks,
+        # while casting to Any to keep Pylance happy.
         final_result = qutip.Result(
-            e_ops={}, options=typing.cast(typing.Any, solver_options)
+            e_ops={}, options=typing.cast(typing.Any, result_options)
         )
         final_result.states = global_states
 
@@ -194,7 +189,7 @@ class QuTiPEngine:
         Executes analytical unitary evolution and Lie-Trotter decay over an idle time block.
 
         Args:
-            system (QuantumSystem): The static quantum system.
+            system (QuantumSystem): The static quantum system containing cached spectral data.
             initial_state (qutip.Qobj): The state at the beginning of the idle chunk.
             t_slice (np.ndarray): The segmented time array for the idle chunk.
             eigenvalues (np.ndarray): 1D array of static Hamiltonian eigenvalues.
@@ -204,7 +199,6 @@ class QuTiPEngine:
             list[qutip.Qobj]: The analytically computed state history matching the time slice.
         """
         # WHY: Open-system decay (T1/T2) requires density matrices.
-        # We ensure the state is a density matrix before applying dissipative maps.
         rho = (
             initial_state
             if initial_state.type == "oper"
@@ -212,45 +206,27 @@ class QuTiPEngine:
         )
         rho_dense = rho.full()
 
-        # WHY: Transform the initial density matrix into the eigenbasis of the static Hamiltonian.
-        # rho_eigen = V^dagger * rho * V
-        v_dag = eigenvectors.conj().T
-        rho_eigen = v_dag @ rho_dense @ eigenvectors
+        # WHY: Transform the initial density matrix into the eigenbasis using cached v_dag.
+        rho_eigen = system.v_dag @ rho_dense @ eigenvectors
 
         dt_array = t_slice - t_slice[0]
         states = []
 
-        # WHY: Calculate eigenvalue differences once to compute the unitary phase accumulation.
-        # Delta_E[j, k] = E[j] - E[k]
-        delta_e = eigenvalues[:, None] - eigenvalues[None, :]
-
         for dt in dt_array:
             # 1. Unitary Spectral Leap
-            # WHY: In the eigenbasis, the time evolution of the density matrix is a simple element-wise phase rotation.
-            phase_matrix = np.exp(-1j * delta_e * dt)
-            rho_t_eigen = rho_eigen * phase_matrix
+            # WHY: Evaluate unitary phase accumulation using the cached delta_e energy gaps.
+            phase_matrix = np.exp(-1j * system.delta_e * dt)
 
-            # 2. Lie-Trotter Decay Mapping (Approximation)
-            # WHY: To avoid computationally heavy superoperators, we approximate relaxation by applying phenomenological
-            # damping directly to the state elements. This assumes basis states roughly align with energy eigenstates.
-            for idx, q_name in enumerate(system.q_names):
-                q_cfg = system.cfg.qubits[q_name]
-                if q_cfg.T1 < np.inf or q_cfg.T2 < np.inf:
-                    gamma_1 = 1.0 / q_cfg.T1 if q_cfg.T1 < np.inf else 0.0
-                    gamma_2 = 1.0 / q_cfg.T2 if q_cfg.T2 < np.inf else 0.0
+            # 2. Lie-Trotter Decay Mapping
+            # WHY: Apply the cached global off-diagonal decay rate matrix scaling factor.
+            decay_matrix = np.exp(-system.decay_rate_matrix * dt)
 
-                    # Apply simple exponential damping factor proportional to the time step.
-                    decay_factor = np.exp(-(gamma_1 / 2 + gamma_2) * dt)
+            # WHY: Element-wise multiply the eigenstate density matrix by both the phase
+            # and decay matrices simultaneously. This applies phenomenological damping without nested loops.
+            rho_t_eigen = rho_eigen * phase_matrix * decay_matrix
 
-                    # WHY: Apply the damping factor to the off-diagonal elements of the full matrix space.
-                    # Note: A true multi-qubit tensor product partial-trace mapping is complex;
-                    # for strict performance, we use a global off-diagonal mask approximation here.
-                    mask = ~np.eye(rho_t_eigen.shape[0], dtype=bool)
-                    rho_t_eigen[mask] *= decay_factor
-
-            # WHY: Transform the state back to the computational (laboratory) basis.
-            # rho_lab = V * rho_t_eigen * V^dagger
-            rho_lab = eigenvectors @ rho_t_eigen @ v_dag
+            # 3. Transform back to the laboratory basis
+            rho_lab = eigenvectors @ rho_t_eigen @ system.v_dag
 
             # WHY: Repackage into QuTiP Qobj to maintain pipeline compatibility.
             qobj_state = qutip.Qobj(rho_lab, dims=rho.dims)

@@ -1,11 +1,15 @@
+# tests/conftest.py
 # SPDX-FileCopyrightText: © 2026 Qblox <https://qblox.com>
 # SPDX-License-Identifier: LicenseRef-Qblox
+
 import pytest
+
+from qblox_sim.config import SimulationConfig
 
 
 @pytest.fixture
-def default_qubit_params():
-    """Provides default multi-qubit topology parameters for single-qubit baseline tests."""
+def default_qubit_params() -> dict:
+    """Provides default multi-qubit topology parameters for standard baseline tests."""
     return {
         "qubits": {
             "q0": {
@@ -37,3 +41,9 @@ def default_qubit_params():
         },
         "dt": 1.0e-9,
     }
+
+
+@pytest.fixture
+def default_config(default_qubit_params) -> SimulationConfig:
+    """Provides a pre-instantiated SimulationConfig object for direct physics/engine testing."""
+    return SimulationConfig.from_dict(default_qubit_params)

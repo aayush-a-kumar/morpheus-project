@@ -33,12 +33,18 @@ dev = [
     "typos",
     "vulture",
     "mdformat",
-    "commitizen"
+    "commitizen",
+    "line-profiler"
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "unit: Fast, isolated tests for standard logic.",
+    "edge_case: Tests for bounds, zeroes, nulls, and expected failures.",
+    "benchmark: Tests specifically designed to check runtime, memory, or throughput."
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
